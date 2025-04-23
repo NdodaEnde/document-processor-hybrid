@@ -96,6 +96,8 @@ def parse_pdf_agentic(file_content, filename):
             for grounding in chunk.grounding:
                 # grounding.page is 0-based
                 page_idx = grounding.page + 1  # convert to 1-based
+                # Convert integer key to string
+                page_key = str(page_idx)
                 
                 if page_idx not in page_map:
                     page_map[page_idx] = []
