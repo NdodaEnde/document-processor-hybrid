@@ -179,7 +179,7 @@ async def process_document(
         result = DocumentResult(
             document_id=document_id,
             document_type=document_type,
-            structured_data=structured_content,
+            structured_data=structured_data,
             raw_response={
                 "document_analysis": {
                     "text": structured_data.get("full_text", ""),
