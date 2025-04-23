@@ -99,8 +99,8 @@ def parse_pdf_agentic(file_content, filename):
                 # Convert integer key to string
                 page_key = str(page_idx)
                 
-                if page_idx not in page_map:
-                    page_map[page_idx] = []
+                if page_key not in page_map:
+                    page_map[page_key] = []
                     
                 # Get bounding box
                 box = grounding.box
@@ -108,7 +108,7 @@ def parse_pdf_agentic(file_content, filename):
                 w, h = box.r - box.l, box.b - box.t
                 
                 # Add to page_map structure
-                page_map[page_idx].append({
+                page_map[page_key].append({
                     "bboxes": [[x1, y1, w, h]],
                     "captions": [chunk.text],
                 })
@@ -261,15 +261,15 @@ async def process_multiple_documents(
                     # Process bounding boxes
                     for grounding in chunk.grounding:
                         page_idx = grounding.page + 1
-                        
-                        if page_idx not in page_map:
-                            page_map[page_idx] = []
+                        page_key = str(page_idx)
+                        if page_key not in page_map:
+                            page_map[page_key] = []
                             
                         box = grounding.box
                         x1, y1 = box.l, box.t
                         w, h = box.r - box.l, box.b - box.t
                         
-                        page_map[page_idx].append({
+                        page_map[page_key].append({
                             "bboxes": [[x1, y1, w, h]],
                             "captions": [chunk.text],
                         })
