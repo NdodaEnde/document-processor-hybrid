@@ -261,6 +261,8 @@ async def process_multiple_documents(
                     # Process bounding boxes
                     for grounding in chunk.grounding:
                         page_idx = grounding.page + 1
+                        # FIX: Convert integer key to string
+                        page_key = str(page_idx)
                         
                         if page_idx not in page_map:
                             page_map[page_idx] = []
