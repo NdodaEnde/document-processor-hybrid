@@ -178,7 +178,7 @@ async def process_document(
         filename = file.filename
 
         # DEBUG: Log sizes and structure
-        print(f"Structured data has {len(structured_data.keys())} top-level keys")
+        print(f"Structured data has {len(structured_data.get('keys', []))} top-level keys")
         print(f"Bounding boxes has {len(bounding_boxes.keys())} pages")
 
         try:
