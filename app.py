@@ -50,13 +50,8 @@ class DocumentResult(BaseModel):
     document_type: str
     structured_data: Dict[str, Any]
     raw_response: Dict[str, Any]
-    bounding_boxes: Dict[str, Any]  # Changed from Dict[str, List]
+    bounding_boxes: Dict[str, List]
     processing_time: float
-    
-    class Config:
-        # Extra settings to make validation less strict
-        extra = "ignore"  # Ignore extra fields
-        arbitrary_types_allowed = True  # Allow arbitrary types
 
 # Parse PDFs with the agentic-doc SDK
 def parse_pdf_agentic(file_content, filename):
@@ -176,60 +171,34 @@ async def process_document(
         # Read the file content
         file_content = await file.read()
         filename = file.filename
-
-        # DEBUG: Log sizes and structure
-        print(f"Structured data has {len(structured_data.get('keys', []))} top-level keys")
-        print(f"Bounding boxes has {len(bounding_boxes.keys())} pages")
-
-        try:
-            # Try to create the response object
-            result = DocumentResult(
-                document_id=document_id,
-                document_type=document_type,
-                structured_data=structured_data,
-                raw_response={
-                    "document_analysis": {
-                        "text": structured_data.get("full_text", ""),
-                        "tables": structured_data.get("tables", [])
-                    },
-                    "data": {
-                        "markdown": structured_data.get("full_text", "")
-                    }
+        
+        # Process the document with SDK
+        structured_data, bounding_boxes, processing_time = parse_pdf_agentic(file_content, filename)
+        
+        # Prepare the response
+        result = DocumentResult(
+            document_id=document_id,
+            document_type=document_type,
+            structured_data=structured_data,
+            raw_response={
+                "document_analysis": {
+                    "text": structured_data.get("full_text", ""),
+                    "tables": structured_data.get("tables", [])
                 },
-                bounding_boxes=bounding_boxes,
-                processing_time=processing_time
-            )
-            return result
-        except Exception as validation_error:
-            # If there's an error creating the response, log details and return simplified response
-            import traceback
-            print(f"Validation error: {str(validation_error)}")
-            print(f"Traceback: {traceback.format_exc()}")
-            
-            # Return a simplified response to avoid validation issues
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "success": True,
-                    "document_id": document_id,
-                    "document_type": document_type,
-                    "processing_time": processing_time,
-                    "summary": {
-                        "text_length": len(structured_data.get("full_text", "")),
-                        "table_count": len(structured_data.get("tables", [])),
-                        "page_count": len(bounding_boxes)
-                    }
+                "data": {
+                    "markdown": structured_data.get("full_text", "")
                 }
-            )
+            },
+            bounding_boxes=bounding_boxes,
+            processing_time=processing_time
+        )
+        
+        return result
         
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"PROCESSING ERROR: {str(e)}")
-        print(f"TRACEBACK: {error_trace}")
         return JSONResponse(
             status_code=500,
-            content={"error": f"Processing failed: {str(e)}", "traceback": error_trace}
+            content={"error": f"Processing failed: {str(e)}"}
         )
 
 @app.post("/process-documents", response_model=List[DocumentResult])
@@ -292,8 +261,6 @@ async def process_multiple_documents(
                     # Process bounding boxes
                     for grounding in chunk.grounding:
                         page_idx = grounding.page + 1
-                        # FIX: Convert integer key to string
-                        page_key = str(page_idx)
                         
                         if page_idx not in page_map:
                             page_map[page_idx] = []
