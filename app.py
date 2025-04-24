@@ -73,6 +73,12 @@ def parse_pdf_agentic(file_content, filename):
         
         # Extract raw text and structured content
         all_text = ""
+        structured_content = {
+            "document_text": "",
+            "tables": [],
+            "form_fields": {},
+            "checkboxes": []
+        }
         
         for chunk in parsed_doc.chunks:
             if chunk.chunk_type == "error":
@@ -80,6 +86,11 @@ def parse_pdf_agentic(file_content, filename):
                 
             if chunk.text:
                 all_text += chunk.text + "\n"
+                
+            if chunk.chunk_type == "table":
+                structured_content["tables"].append(chunk.text)
+            elif chunk.chunk_type == "text":
+                structured_content["document_text"] += chunk.text + "\n"
                 
             # A single chunk can have multiple groundings (boxes)
             for grounding in chunk.grounding:
@@ -101,145 +112,36 @@ def parse_pdf_agentic(file_content, filename):
                     "bboxes": [[x1, y1, w, h]],
                     "captions": [chunk.text],
                 })
+                
+                # Check if this might be a form field or checkbox
+                if ":" in chunk.text and len(chunk.text.split(":")) == 2:
+                    key, value = chunk.text.split(":", 1)
+                    structured_content["form_fields"][key.strip()] = value.strip()
+                
+                # Check for possible checkboxes
+                if "[X]" in chunk.text or "[x]" in chunk.text or "☑" in chunk.text:
+                    structured_content["checkboxes"].append({
+                        "text": chunk.text,
+                        "checked": True,
+                        "page": page_idx,
+                        "bbox": [x1, y1, w, h]
+                    })
+                elif "[ ]" in chunk.text or "☐" in chunk.text:
+                    structured_content["checkboxes"].append({
+                        "text": chunk.text,
+                        "checked": False,
+                        "page": page_idx,
+                        "bbox": [x1, y1, w, h]
+                    })
+                    
+        # Add full text to structured content
+        structured_content["full_text"] = all_text
         
-        # Extract key information from markdown
-        patient_name = "Unknown"
-        patient_id = ""
-        company_name = ""
-        examination_date = ""
-        expiry_date = ""
-        job_title = ""
-        is_pre_employment = False
-        is_periodical = False
-        is_exit = False
-        is_fit = False
-        is_fit_with_restriction = False
-        is_fit_with_condition = False
-        is_temporarily_unfit = False
-        is_unfit = False
-        
-        # Extract from markdown
-        for line in all_text.split('\n'):
-            if "**Initials & Surname**:" in line:
-                patient_name = line.split("**Initials & Surname**:")[1].strip()
-            elif "**ID No**:" in line:
-                patient_id = line.split("**ID No**:")[1].strip()
-            elif "**Company Name**:" in line:
-                company_name = line.split("**Company Name**:")[1].strip()
-            elif "**Date of Examination**:" in line:
-                examination_date = line.split("**Date of Examination**:")[1].strip()
-            elif "**Expiry Date**:" in line:
-                expiry_date = line.split("**Expiry Date**:")[1].strip()
-            elif "**Job Title**:" in line:
-                job_title = line.split("**Job Title**:")[1].strip()
-            elif "Pre-Employment**: [x]" in line or "Pre-Employment**:[x]" in line:
-                is_pre_employment = True
-            elif "Periodical**: [x]" in line or "Periodical**:[x]" in line:
-                is_periodical = True
-            elif "Exit**: [x]" in line or "Exit**:[x]" in line:
-                is_exit = True
-            elif "FIT**: [x]" in line or "FIT**:[x]" in line:
-                is_fit = True
-            elif "Fit with Restriction**: [x]" in line or "Fit with Restriction**:[x]" in line:
-                is_fit_with_restriction = True
-            elif "Fit with Condition**: [x]" in line or "Fit with Condition**:[x]" in line:
-                is_fit_with_condition = True
-            elif "Temporary Unfit**: [x]" in line or "Temporary Unfit**:[x]" in line:
-                is_temporarily_unfit = True
-            elif "UNFIT**: [x]" in line or "UNFIT**:[x]" in line:
-                is_unfit = True
-        
-        # Create a checkbox based on the full text
-        checkboxes = []
-        if all_text:
-            checkboxes.append({
-                "text": all_text,
-                "checked": True,
-                "page": 1,
-                "bbox": [0.05625, 0.1626179875333927, 0.91375, 0.7255943900267141]
-            })
-        
-        # Build the structure that matches your API response
-        structured_content = {
-            "document_text": all_text,
-            "tables": [],
-            "form_fields": {},
-            "checkboxes": checkboxes,
-            "full_text": all_text,
-            # Add these critical fields
-            "patient": {
-                "name": patient_name,
-                "id_number": patient_id,
-                "company": company_name,
-                "occupation": job_title,
-                "date_of_birth": "",
-                "employee_id": patient_id
-            },
-            "examination_results": {
-                "date": examination_date,
-                "type": {
-                    "pre_employment": is_pre_employment,
-                    "periodical": is_periodical,
-                    "exit": is_exit
-                },
-                "test_results": {}
-            },
-            "certification": {
-                "examination_date": examination_date,
-                "valid_until": expiry_date,
-                "fit": is_fit,
-                "fit_with_restrictions": is_fit_with_restriction,
-                "fit_with_condition": is_fit_with_condition,
-                "temporarily_unfit": is_temporarily_unfit,
-                "unfit": is_unfit,
-                "comments": ""
-            },
-            "restrictions": {}
-        }
-        
-        # Extract test results
-        test_structure = {
-            "bloods": {"done": False, "results": ""},
-            "far_near_vision": {"done": False, "results": ""},
-            "side_depth": {"done": False, "results": ""},
-            "night_vision": {"done": False, "results": ""},
-            "hearing": {"done": False, "results": ""},
-            "heights": {"done": False, "results": ""},
-            "lung_function": {"done": False, "results": ""},
-            "x_ray": {"done": False, "results": ""},
-            "drug_screen": {"done": False, "results": ""}
-        }
-        
-        # Check for test results in the markdown
-        if "BLOODS" in all_text and "[x]" in all_text:
-            test_structure["bloods"]["done"] = True
-        if "FAR, NEAR VISION" in all_text and "[x]" in all_text:
-            test_structure["far_near_vision"]["done"] = True
-        if "SIDE & DEPTH" in all_text and "[x]" in all_text:
-            test_structure["side_depth"]["done"] = True
-        if "NIGHT VISION" in all_text and "[x]" in all_text:
-            test_structure["night_vision"]["done"] = True
-        if "Hearing" in all_text and "[x]" in all_text:
-            test_structure["hearing"]["done"] = True
-        if "Working at Heights" in all_text and "[x]" in all_text:
-            test_structure["heights"]["done"] = True
-        if "Lung Function" in all_text and "[x]" in all_text:
-            test_structure["lung_function"]["done"] = True
-        if "X-Ray" in all_text and "[x]" in all_text:
-            test_structure["x_ray"]["done"] = True
-        if "Drug Screen" in all_text and "[x]" in all_text:
-            test_structure["drug_screen"]["done"] = True
-            
-        # Add test results to structured data
-        for test_key, test_info in test_structure.items():
-            structured_content["examination_results"]["test_results"][f"{test_key}_done"] = test_info["done"]
-            structured_content["examination_results"]["test_results"][f"{test_key}_results"] = test_info["results"]
-        
-        # Create raw response with the same structure
+        # Create result compatible with Landing AI API format
         raw_response = {
             "document_analysis": {
                 "text": all_text,
-                "tables": []
+                "tables": structured_content["tables"]
             },
             "data": {
                 "markdown": all_text
@@ -255,43 +157,45 @@ def parse_pdf_agentic(file_content, filename):
         except:
             pass
 
-@app.post("/process-document")
+@app.post("/process-document", response_model=DocumentResult)
 async def process_document(
     file: UploadFile = File(...),
     document_type: str = Form(...),
     document_id: Optional[str] = Form(None)
 ):
+    """
+    Process a document with the agentic-doc SDK.
+    Returns structured data and bounding box information.
+    """
     try:
         # Read the file content
         file_content = await file.read()
         filename = file.filename
         
         # Process the document with SDK
-        structured_content, bounding_boxes, processing_time = parse_pdf_agentic(file_content, filename)
+        structured_data, bounding_boxes, processing_time = parse_pdf_agentic(file_content, filename)
         
-        # Skip Pydantic validation and return JSONResponse directly
-        return JSONResponse(
-            status_code=200,
-            content={
-                "document_id": document_id,
-                "document_type": document_type,
-                "structured_data": structured_content,
-                "raw_response": {
-                    "document_analysis": {
-                        "text": structured_content.get("full_text", ""),
-                        "tables": structured_content.get("tables", [])
-                    },
-                    "data": {
-                        "markdown": structured_content.get("full_text", "")
-                    }
+        # Prepare the response
+        result = DocumentResult(
+            document_id=document_id,
+            document_type=document_type,
+            structured_data=structured_data,
+            raw_response={
+                "document_analysis": {
+                    "text": structured_data.get("full_text", ""),
+                    "tables": structured_data.get("tables", [])
+                },
+                "data": {
+                    "markdown": structured_data.get("full_text", "")
                 }
-            }
+            },
+            bounding_boxes=bounding_boxes,
+            processing_time=processing_time
         )
+        
+        return result
+        
     except Exception as e:
-        import traceback
-        error_trace = traceback.format_exc()
-        print(f"PROCESSING ERROR: {str(e)}")
-        print(f"TRACEBACK: {error_trace}")
         return JSONResponse(
             status_code=500,
             content={"error": f"Processing failed: {str(e)}"}
