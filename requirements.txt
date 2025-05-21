@@ -1,8 +1,11 @@
 fastapi
 uvicorn
 python-multipart
-numpy
 opencv-python-headless
-pillow
-python-dotenv
-agentic-doc
+flask==2.3.3
+flask-cors==4.0.0
+python-dotenv==1.0.0
+numpy==1.24.3
+pillow==10.0.0
+openai==1.6.0
+agentic-doc==0.2.1 
