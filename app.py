@@ -1,10 +1,12 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory, g
 import os
 import tempfile
 import uuid
 import json
 import sys
 import time
+import jwt
+from functools import wraps
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 
@@ -23,9 +25,7 @@ def check_agentic_doc_version():
         # Check if version is too old (before 0.0.13)
         if int(version_parts[0]) == 0 and int(version_parts[1]) == 0 and int(version_parts[2]) < 13:
             print(f"WARNING: agentic-doc version {agentic_doc_version} is too old and will stop working after May 22!")
-            print("Please upgrade to at least version 0.2.0 with: pip install --upgrade agentic-doc==0.2.0")
-            # You can either exit or continue with a warning
-            # sys.exit(1)  # Uncomment to force exit if version is incompatible
+            print("Please upgrade to at least version 0.2.0 with: pip install --upgrade agentic-doc==0.2.1")
         elif int(version_parts[0]) == 0 and int(version_parts[1]) < 2:
             print(f"WARNING: agentic-doc version {agentic_doc_version} uses legacy chunk types.")
             print("It's recommended to upgrade to version 0.2.0 or later.")
@@ -64,7 +64,6 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload size
 
 # SDK Configuration options loaded from environment variables
-# These will be picked up automatically by the SDK
 os.environ.setdefault('BATCH_SIZE', '4')
 os.environ.setdefault('MAX_WORKERS', '5')
 os.environ.setdefault('MAX_RETRIES', '100')
@@ -73,6 +72,133 @@ os.environ.setdefault('RETRY_LOGGING_STYLE', 'log_msg')
 
 # Storage for processed documents
 processed_docs = {}
+
+def serialize_parsed_document(parsed_doc):
+    """
+    Convert ParsedDocument object to JSON-serializable dictionary
+    """
+    try:
+        return {
+            "markdown": getattr(parsed_doc, 'markdown', ''),
+            "chunks": serialize_chunks(getattr(parsed_doc, 'chunks', [])),
+            "errors": serialize_errors(getattr(parsed_doc, 'errors', [])),
+            "processing_time": getattr(parsed_doc, 'processing_time', 0)
+        }
+    except Exception as e:
+        print(f"Error serializing parsed document: {e}")
+        return {
+            "markdown": str(parsed_doc) if parsed_doc else '',
+            "chunks": [],
+            "errors": [{"message": f"Serialization error: {str(e)}", "page": 0}],
+            "processing_time": 0
+        }
+
+def serialize_chunks(chunks):
+    """
+    Convert chunks to JSON-serializable format
+    """
+    serialized_chunks = []
+    for chunk in chunks:
+        try:
+            serialized_chunk = {
+                "type": getattr(chunk, 'type', 'unknown'),
+                "content": getattr(chunk, 'content', ''),
+                "page": getattr(chunk, 'page', 0),
+                "chunk_id": getattr(chunk, 'chunk_id', str(uuid.uuid4())),
+                "grounding": serialize_grounding(getattr(chunk, 'grounding', [])),
+                "metadata": serialize_metadata(getattr(chunk, 'metadata', {}))
+            }
+            serialized_chunks.append(serialized_chunk)
+        except Exception as e:
+            print(f"Error serializing chunk: {e}")
+            # Add a fallback chunk
+            serialized_chunks.append({
+                "type": "error",
+                "content": f"Error serializing chunk: {str(e)}",
+                "page": 0,
+                "chunk_id": str(uuid.uuid4()),
+                "grounding": [],
+                "metadata": {}
+            })
+    return serialized_chunks
+
+def serialize_grounding(grounding):
+    """
+    Convert grounding objects to JSON-serializable format
+    """
+    serialized_grounding = []
+    for ground in grounding:
+        try:
+            serialized_ground = {
+                "box": getattr(ground, 'box', [0, 0, 0, 0]),
+                "page": getattr(ground, 'page', 0),
+                "confidence": getattr(ground, 'confidence', 0.0),
+                "image_path": getattr(ground, 'image_path', None)
+            }
+            serialized_grounding.append(serialized_ground)
+        except Exception as e:
+            print(f"Error serializing grounding: {e}")
+            serialized_grounding.append({
+                "box": [0, 0, 0, 0],
+                "page": 0,
+                "confidence": 0.0,
+                "image_path": None
+            })
+    return serialized_grounding
+
+def serialize_errors(errors):
+    """
+    Convert error objects to JSON-serializable format
+    """
+    serialized_errors = []
+    for error in errors:
+        try:
+            serialized_error = {
+                "message": getattr(error, 'message', str(error)),
+                "page": getattr(error, 'page', 0),
+                "error_code": getattr(error, 'error_code', 'unknown')
+            }
+            serialized_errors.append(serialized_error)
+        except Exception as e:
+            print(f"Error serializing error: {e}")
+            serialized_errors.append({
+                "message": str(error),
+                "page": 0,
+                "error_code": "serialization_error"
+            })
+    return serialized_errors
+
+def serialize_metadata(metadata):
+    """
+    Convert metadata to JSON-serializable format
+    """
+    if metadata is None:
+        return {}
+    
+    try:
+        # Handle different types of metadata
+        if isinstance(metadata, dict):
+            return {str(k): serialize_value(v) for k, v in metadata.items()}
+        else:
+            return {"raw": str(metadata)}
+    except Exception as e:
+        print(f"Error serializing metadata: {e}")
+        return {"error": f"Metadata serialization error: {str(e)}"}
+
+def serialize_value(value):
+    """
+    Convert individual values to JSON-serializable format
+    """
+    if value is None:
+        return None
+    elif isinstance(value, (str, int, float, bool)):
+        return value
+    elif isinstance(value, (list, tuple)):
+        return [serialize_value(item) for item in value]
+    elif isinstance(value, dict):
+        return {str(k): serialize_value(v) for k, v in value.items()}
+    else:
+        return str(value)
 
 @app.route('/health', methods=['GET'])
 def health_check():
@@ -131,8 +257,14 @@ def process_documents():
         
         # Generate a unique ID for this batch of documents
         batch_id = str(uuid.uuid4())
+        
+        # Serialize the result before storing
+        serialized_result = []
+        for doc in result:
+            serialized_result.append(serialize_parsed_document(doc))
+        
         processed_docs[batch_id] = {
-            "result": result,
+            "result": serialized_result,  # Store serialized result
             "files": saved_files,
             "processed_at": time.time(),
             "groundings_dir": grounding_dir if save_groundings else None
@@ -149,7 +281,7 @@ def process_documents():
         }
         
         # Add warning about chunk type changes if using old version
-        if agentic_doc_version and agentic_doc_version.startswith("0.0.") or agentic_doc_version and agentic_doc_version.startswith("0.1."):
+        if agentic_doc_version and (agentic_doc_version.startswith("0.0.") or agentic_doc_version.startswith("0.1.")):
             formatted_result["warnings"].append(
                 "IMPORTANT: Chunk types are changing as of May 22, 2025. Please upgrade to agentic-doc v0.2.0 or later."
             )
@@ -157,6 +289,7 @@ def process_documents():
         return jsonify(formatted_result)
     
     except Exception as e:
+        print(f"Error processing documents: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route('/get-document-data/<batch_id>', methods=['GET'])
@@ -167,64 +300,18 @@ def get_document_data(batch_id):
     if batch_id not in processed_docs:
         return jsonify({"error": "Batch ID not found"}), 404
     
-    # Return the processed document data
-    return jsonify({
-        "batch_id": batch_id,
-        "result": processed_docs[batch_id]["result"],
-        "files": [os.path.basename(f) for f in processed_docs[batch_id]["files"]],
-        "processed_at": processed_docs[batch_id]["processed_at"],
-        "groundings_dir": processed_docs[batch_id].get("groundings_dir")
-    })
-
-@app.route('/visualize-document/<batch_id>', methods=['GET'])
-def visualize_document(batch_id):
-    """
-    Create visualizations of the document parsing results
-    """
-    if batch_id not in processed_docs:
-        return jsonify({"error": "Batch ID not found"}), 404
-    
     try:
-        # Import visualization utilities from the SDK
-        try:
-            from agentic_doc.utils import viz_parsed_document
-        except ImportError:
-            return jsonify({"error": "Visualization feature not available in the current SDK version"}), 501
-        
-        # Get the document data
-        doc_data = processed_docs[batch_id]
-        file_paths = doc_data["files"]
-        results = doc_data["result"]
-        
-        # Create visualization directory
-        viz_dir = os.path.join(app.config['UPLOAD_FOLDER'], f"viz_{batch_id}")
-        os.makedirs(viz_dir, exist_ok=True)
-        
-        # Generate visualizations for each document
-        viz_paths = []
-        for i, file_path in enumerate(file_paths):
-            if i < len(results):
-                output_images = viz_parsed_document(
-                    file_path,
-                    results[i],
-                    output_dir=viz_dir
-                )
-                
-                # Save paths of visualization images
-                for j, img in enumerate(output_images):
-                    viz_filename = f"{os.path.basename(file_path)}_viz_page_{j}.png"
-                    viz_path = os.path.join(viz_dir, viz_filename)
-                    img.save(viz_path)
-                    viz_paths.append(viz_path)
-        
+        # Return the processed document data (already serialized)
         return jsonify({
-            "status": "success",
-            "visualization_paths": viz_paths,
-            "batch_id": batch_id
+            "batch_id": batch_id,
+            "result": processed_docs[batch_id]["result"],
+            "files": [os.path.basename(f) for f in processed_docs[batch_id]["files"]],
+            "processed_at": processed_docs[batch_id]["processed_at"],
+            "groundings_dir": processed_docs[batch_id].get("groundings_dir")
         })
-    
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        print(f"Error retrieving document data: {e}")
+        return jsonify({"error": f"Error retrieving document data: {str(e)}"}), 500
 
 @app.route('/ask-question', methods=['POST'])
 def ask_question():
@@ -297,6 +384,5 @@ def cleanup_batch(batch_id):
 
 if __name__ == '__main__':
     # Set the port based on environment variable or default to 5001
-    # Using 5001 instead of 5000 to avoid conflicts with AirPlay on macOS
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port, debug=True)
