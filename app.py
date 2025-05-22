@@ -1,11 +1,10 @@
-from flask import Flask, request, jsonify, send_from_directory, g
+from flask import Flask, request, jsonify, send_from_directory
 import os
 import tempfile
 import uuid
 import json
 import sys
 import time
-import jwt
 from functools import wraps
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
@@ -78,14 +77,31 @@ def serialize_parsed_document(parsed_doc):
     Convert ParsedDocument object to JSON-serializable dictionary
     """
     try:
-        return {
-            "markdown": getattr(parsed_doc, 'markdown', ''),
-            "chunks": serialize_chunks(getattr(parsed_doc, 'chunks', [])),
-            "errors": serialize_errors(getattr(parsed_doc, 'errors', [])),
-            "processing_time": getattr(parsed_doc, 'processing_time', 0)
-        }
+        if hasattr(parsed_doc, '__dict__'):
+            return {
+                "markdown": getattr(parsed_doc, 'markdown', ''),
+                "chunks": serialize_chunks(getattr(parsed_doc, 'chunks', [])),
+                "errors": serialize_errors(getattr(parsed_doc, 'errors', [])),
+                "processing_time": getattr(parsed_doc, 'processing_time', 0)
+            }
+        elif isinstance(parsed_doc, dict):
+            # If it's already a dictionary
+            return {
+                "markdown": parsed_doc.get('markdown', ''),
+                "chunks": serialize_chunks(parsed_doc.get('chunks', [])),
+                "errors": serialize_errors(parsed_doc.get('errors', [])),
+                "processing_time": parsed_doc.get('processing_time', 0)
+            }
+        else:
+            # Fallback for unknown document types
+            return {
+                "markdown": str(parsed_doc) if parsed_doc else '',
+                "chunks": [],
+                "errors": [{"message": f"Unknown document type: {type(parsed_doc)}", "page": 0}],
+                "processing_time": 0
+            }
     except Exception as e:
-        print(f"Error serializing parsed document: {e}")
+        print(f"Error serializing parsed document: {e}, doc type: {type(parsed_doc)}")
         return {
             "markdown": str(parsed_doc) if parsed_doc else '',
             "chunks": [],
@@ -97,54 +113,156 @@ def serialize_chunks(chunks):
     """
     Convert chunks to JSON-serializable format
     """
+    if not chunks:
+        return []
+    
     serialized_chunks = []
     for chunk in chunks:
         try:
-            serialized_chunk = {
-                "type": getattr(chunk, 'type', 'unknown'),
-                "content": getattr(chunk, 'content', ''),
-                "page": getattr(chunk, 'page', 0),
-                "chunk_id": getattr(chunk, 'chunk_id', str(uuid.uuid4())),
-                "grounding": serialize_grounding(getattr(chunk, 'grounding', [])),
-                "metadata": serialize_metadata(getattr(chunk, 'metadata', {}))
-            }
+            # Handle different chunk object types
+            if hasattr(chunk, '__dict__'):
+                serialized_chunk = {
+                    "type": getattr(chunk, 'type', 'unknown'),
+                    "content": getattr(chunk, 'content', ''),
+                    "page": getattr(chunk, 'page', 0),
+                    "chunk_id": getattr(chunk, 'chunk_id', str(uuid.uuid4())),
+                    "grounding": serialize_grounding(getattr(chunk, 'grounding', [])),
+                    "metadata": serialize_metadata(getattr(chunk, 'metadata', {}))
+                }
+            elif isinstance(chunk, dict):
+                # If chunk is already a dictionary
+                serialized_chunk = {
+                    "type": chunk.get('type', 'unknown'),
+                    "content": chunk.get('content', ''),
+                    "page": chunk.get('page', 0),
+                    "chunk_id": chunk.get('chunk_id', str(uuid.uuid4())),
+                    "grounding": serialize_grounding(chunk.get('grounding', [])),
+                    "metadata": serialize_metadata(chunk.get('metadata', {}))
+                }
+            else:
+                # Fallback for unknown chunk types
+                serialized_chunk = {
+                    "type": "unknown",
+                    "content": str(chunk),
+                    "page": 0,
+                    "chunk_id": str(uuid.uuid4()),
+                    "grounding": [],
+                    "metadata": {}
+                }
+            
             serialized_chunks.append(serialized_chunk)
+            
         except Exception as e:
-            print(f"Error serializing chunk: {e}")
-            # Add a fallback chunk
+            print(f"Error serializing chunk: {e}, chunk type: {type(chunk)}")
+            # Add a fallback chunk with error info
             serialized_chunks.append({
                 "type": "error",
                 "content": f"Error serializing chunk: {str(e)}",
                 "page": 0,
                 "chunk_id": str(uuid.uuid4()),
                 "grounding": [],
-                "metadata": {}
+                "metadata": {"serialization_error": str(e)}
             })
+    
     return serialized_chunks
 
 def serialize_grounding(grounding):
     """
     Convert grounding objects to JSON-serializable format
     """
+    if not grounding:
+        return []
+    
     serialized_grounding = []
     for ground in grounding:
         try:
-            serialized_ground = {
-                "box": getattr(ground, 'box', [0, 0, 0, 0]),
-                "page": getattr(ground, 'page', 0),
-                "confidence": getattr(ground, 'confidence', 0.0),
-                "image_path": getattr(ground, 'image_path', None)
-            }
+            # Handle different types of grounding objects
+            if hasattr(ground, '__dict__'):
+                # If it's an object with attributes, extract them
+                serialized_ground = {}
+                
+                # Common attributes to look for
+                if hasattr(ground, 'box'):
+                    box = getattr(ground, 'box')
+                    if isinstance(box, (list, tuple)):
+                        serialized_ground["box"] = list(box)
+                    else:
+                        # Handle ChunkGroundingBox or similar objects
+                        serialized_ground["box"] = serialize_box_object(box)
+                else:
+                    serialized_ground["box"] = [0, 0, 0, 0]
+                
+                serialized_ground["page"] = getattr(ground, 'page', 0)
+                serialized_ground["confidence"] = getattr(ground, 'confidence', 0.0)
+                serialized_ground["image_path"] = getattr(ground, 'image_path', None)
+                
+            elif isinstance(ground, dict):
+                # If it's already a dictionary
+                serialized_ground = {
+                    "box": ground.get('box', [0, 0, 0, 0]),
+                    "page": ground.get('page', 0),
+                    "confidence": ground.get('confidence', 0.0),
+                    "image_path": ground.get('image_path', None)
+                }
+            else:
+                # Fallback for unknown types
+                serialized_ground = {
+                    "box": [0, 0, 0, 0],
+                    "page": 0,
+                    "confidence": 0.0,
+                    "image_path": None,
+                    "raw": str(ground)
+                }
+            
             serialized_grounding.append(serialized_ground)
+            
         except Exception as e:
-            print(f"Error serializing grounding: {e}")
+            print(f"Error serializing grounding item: {e}, type: {type(ground)}")
             serialized_grounding.append({
                 "box": [0, 0, 0, 0],
                 "page": 0,
                 "confidence": 0.0,
-                "image_path": None
+                "image_path": None,
+                "error": str(e)
             })
+    
     return serialized_grounding
+
+def serialize_box_object(box):
+    """
+    Convert box objects (like ChunkGroundingBox) to JSON-serializable format
+    """
+    try:
+        if hasattr(box, '__dict__'):
+            # Try to extract coordinates from the object
+            if hasattr(box, 'x') and hasattr(box, 'y') and hasattr(box, 'width') and hasattr(box, 'height'):
+                # Convert from x,y,width,height to x1,y1,x2,y2 format
+                x1 = getattr(box, 'x', 0)
+                y1 = getattr(box, 'y', 0)
+                width = getattr(box, 'width', 0)
+                height = getattr(box, 'height', 0)
+                return [x1, y1, x1 + width, y1 + height]
+            elif hasattr(box, 'x1') and hasattr(box, 'y1') and hasattr(box, 'x2') and hasattr(box, 'y2'):
+                # Already in x1,y1,x2,y2 format
+                return [getattr(box, 'x1', 0), getattr(box, 'y1', 0), getattr(box, 'x2', 0), getattr(box, 'y2', 0)]
+            elif hasattr(box, 'left') and hasattr(box, 'top') and hasattr(box, 'right') and hasattr(box, 'bottom'):
+                # left,top,right,bottom format
+                return [getattr(box, 'left', 0), getattr(box, 'top', 0), getattr(box, 'right', 0), getattr(box, 'bottom', 0)]
+            else:
+                # Try to convert the entire object to a list/array
+                if hasattr(box, '__iter__') and not isinstance(box, str):
+                    return list(box)
+                else:
+                    # Last resort - extract all numeric attributes
+                    attrs = [getattr(box, attr) for attr in dir(box) if not attr.startswith('_') and isinstance(getattr(box, attr), (int, float))]
+                    return attrs[:4] if len(attrs) >= 4 else [0, 0, 0, 0]
+        elif isinstance(box, (list, tuple)):
+            return list(box)
+        else:
+            return [0, 0, 0, 0]
+    except Exception as e:
+        print(f"Error serializing box object: {e}, type: {type(box)}")
+        return [0, 0, 0, 0]
 
 def serialize_errors(errors):
     """
