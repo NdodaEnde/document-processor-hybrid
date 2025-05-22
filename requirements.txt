@@ -9,3 +9,4 @@ numpy
 pillow
 openai==1.6.0
 agentic-doc==0.2.1 
+PyJWT
