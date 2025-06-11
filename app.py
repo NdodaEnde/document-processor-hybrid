@@ -49,23 +49,47 @@ def force_garbage_collection():
     except Exception as e:
         print(f"[GC] Error during garbage collection: {e}")
 
-def cleanup_temp_files():
-    """Clean up temporary files"""
+def cleanup_temp_files(exclude_files=None):
+    """Clean up temporary files, but exclude files we're currently using"""
+    if exclude_files is None:
+        exclude_files = []
+    
     try:
         temp_dir = tempfile.gettempdir()
+        current_time = time.time()
+        
         for filename in os.listdir(temp_dir):
-            if filename.startswith(('tmp', 'doc_processor', 'agentic')):
+            # Skip files we're currently processing
+            filepath = os.path.join(temp_dir, filename)
+            if filepath in exclude_files:
+                print(f"[CLEANUP] Skipping active file: {filename}")
+                continue
+                
+            # Only clean up old temp files (older than 1 hour)
+            if filename.startswith(('tmp', 'agentic')) and os.path.isfile(filepath):
                 try:
-                    filepath = os.path.join(temp_dir, filename)
-                    if os.path.isfile(filepath):
+                    file_age = current_time - os.path.getmtime(filepath)
+                    if file_age > 3600:  # 1 hour old
                         os.remove(filepath)
-                        print(f"[CLEANUP] Removed temp file: {filename}")
-                    elif os.path.isdir(filepath):
-                        import shutil
-                        shutil.rmtree(filepath)
-                        print(f"[CLEANUP] Removed temp dir: {filename}")
+                        print(f"[CLEANUP] Removed old temp file: {filename}")
+                    else:
+                        print(f"[CLEANUP] Keeping recent file: {filename} (age: {file_age:.0f}s)")
                 except Exception as e:
                     print(f"[CLEANUP] Error removing {filename}: {e}")
+                    
+            # Clean up old directories (but not our current upload folder)
+            elif filename.startswith(('tmp', 'agentic')) and os.path.isdir(filepath):
+                try:
+                    # Don't remove the doc_processor_uploads directory
+                    if 'doc_processor_uploads' not in filename:
+                        dir_age = current_time - os.path.getmtime(filepath)
+                        if dir_age > 3600:  # 1 hour old
+                            import shutil
+                            shutil.rmtree(filepath)
+                            print(f"[CLEANUP] Removed old temp dir: {filename}")
+                except Exception as e:
+                    print(f"[CLEANUP] Error removing directory {filename}: {e}")
+                    
     except Exception as e:
         print(f"[CLEANUP] Error during cleanup: {e}")
 
@@ -465,9 +489,9 @@ def process_documents():
     if not saved_files:
         return jsonify({"error": "No valid files uploaded"}), 400
     
-    # Force cleanup before processing
+    # Force cleanup before processing - but exclude our current files
     force_garbage_collection()
-    cleanup_temp_files()
+    cleanup_temp_files(exclude_files=saved_files)  # <-- ADD exclude_files parameter
     log_memory_usage("BEFORE SDK processing")
     
     try:
