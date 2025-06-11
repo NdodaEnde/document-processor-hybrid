@@ -5,18 +5,69 @@ import uuid
 import json
 import sys
 import time
-import threading
+import tracemalloc
+import gc
+import psutil
 from functools import wraps
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
-from concurrent.futures import ThreadPoolExecutor
-import psutil
+
+# Start memory tracing
+tracemalloc.start()
 
 # Add parent directory to path to access the Mock SDK
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Version check - Before trying to import the SDK
 import pkg_resources
+
+def log_memory_usage(context=""):
+    """Log current memory usage and top consumers"""
+    try:
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        memory_mb = memory_info.rss / 1024 / 1024
+        print(f"[MEMORY] {context}: {memory_mb:.2f} MB RSS, {memory_info.vms / 1024 / 1024:.2f} MB VMS")
+        
+        # Get top memory consumers
+        snapshot = tracemalloc.take_snapshot()
+        top_stats = snapshot.statistics('lineno')
+        print(f"[MEMORY] Top 3 memory consumers:")
+        for index, stat in enumerate(top_stats[:3], 1):
+            print(f"  {index}. {stat}")
+            
+    except Exception as e:
+        print(f"[MEMORY] Error getting memory info: {e}")
+
+def force_garbage_collection():
+    """Force garbage collection and log results"""
+    try:
+        collected = gc.collect()
+        print(f"[GC] Collected {collected} objects")
+        gc.collect(1)  # Collect generation 1
+        gc.collect(2)  # Collect generation 2
+    except Exception as e:
+        print(f"[GC] Error during garbage collection: {e}")
+
+def cleanup_temp_files():
+    """Clean up temporary files"""
+    try:
+        temp_dir = tempfile.gettempdir()
+        for filename in os.listdir(temp_dir):
+            if filename.startswith(('tmp', 'doc_processor', 'agentic')):
+                try:
+                    filepath = os.path.join(temp_dir, filename)
+                    if os.path.isfile(filepath):
+                        os.remove(filepath)
+                        print(f"[CLEANUP] Removed temp file: {filename}")
+                    elif os.path.isdir(filepath):
+                        import shutil
+                        shutil.rmtree(filepath)
+                        print(f"[CLEANUP] Removed temp dir: {filename}")
+                except Exception as e:
+                    print(f"[CLEANUP] Error removing {filename}: {e}")
+    except Exception as e:
+        print(f"[CLEANUP] Error during cleanup: {e}")
 
 def check_agentic_doc_version():
     try:
@@ -59,207 +110,31 @@ except ImportError:
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
 
-# ENHANCED CONFIGURATION
+# Configuration
 UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'doc_processor_uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max upload size
 
-# Enhanced resource limits
-MAX_BATCH_SIZE = 50  # Maximum files per batch
-MAX_FILE_SIZE = 8 * 1024 * 1024  # 8MB per file
-MAX_TOTAL_BATCH_SIZE = 100 * 1024 * 1024  # 100MB total per batch
-MEMORY_LIMIT = 85  # Stop processing if memory > 85%
-PROCESSING_TIMEOUT = 180  # 3 minutes max per batch
-CHUNK_SIZE = 10  # Process 10 files at a time
-CLEANUP_INTERVAL = 300  # Clean up every 5 minutes
-
 # SDK Configuration options loaded from environment variables
-os.environ.setdefault('BATCH_SIZE', '4')
-os.environ.setdefault('MAX_WORKERS', '3')  # Reduced for stability
-os.environ.setdefault('MAX_RETRIES', '50')  # Reduced retries
-os.environ.setdefault('MAX_RETRY_WAIT_TIME', '30')  # Reduced wait time
+os.environ.setdefault('BATCH_SIZE', '1')  # Reduced from 4 to 1
+os.environ.setdefault('MAX_WORKERS', '1')  # Reduced from 5 to 1
+os.environ.setdefault('MAX_RETRIES', '100')
+os.environ.setdefault('MAX_RETRY_WAIT_TIME', '60')
 os.environ.setdefault('RETRY_LOGGING_STYLE', 'log_msg')
 
-# Thread pool for background processing
-executor = ThreadPoolExecutor(max_workers=3)
-
-# Storage for processed documents and processing status
+# Storage for processed documents
 processed_docs = {}
-processing_status = {}
-storage_lock = threading.Lock()
 
-def validate_batch_request(files):
-    """Validate batch processing request"""
-    if len(files) > MAX_BATCH_SIZE:
-        return False, f"Too many files. Maximum: {MAX_BATCH_SIZE}"
-    
-    total_size = 0
-    for file in files:
-        if file.filename:
-            # Check file size
-            file.seek(0, 2)  # Seek to end
-            size = file.tell()
-            file.seek(0)  # Reset to beginning
-            
-            if size > MAX_FILE_SIZE:
-                return False, f"File {file.filename} too large. Maximum: {MAX_FILE_SIZE/1024/1024:.1f}MB"
-            
-            if size == 0:
-                return False, f"File {file.filename} is empty"
-            
-            total_size += size
-    
-    if total_size > MAX_TOTAL_BATCH_SIZE:
-        return False, f"Batch too large. Total maximum: {MAX_TOTAL_BATCH_SIZE/1024/1024:.1f}MB"
-    
-    # Memory check
+def check_file_size(file_path):
+    """Check if file is too large for processing"""
     try:
-        if psutil.virtual_memory().percent > MEMORY_LIMIT:
-            return False, "Server overloaded. Please try again later."
-    except:
-        pass  # psutil might not be available
-    
-    return True, "Valid"
-
-def process_batch_async(batch_id, saved_files, include_marginalia, include_metadata, grounding_dir):
-    """Process batch in background thread with chunking"""
-    try:
-        print(f"Starting async processing for batch {batch_id} with {len(saved_files)} files")
-        
-        with storage_lock:
-            processing_status[batch_id] = {
-                "status": "processing",
-                "progress": 0,
-                "total_files": len(saved_files),
-                "completed_files": 0,
-                "start_time": time.time(),
-                "current_chunk": 0,
-                "total_chunks": (len(saved_files) + CHUNK_SIZE - 1) // CHUNK_SIZE
-            }
-        
-        # Process in chunks to prevent memory issues
-        all_results = []
-        chunk_number = 0
-        
-        for i in range(0, len(saved_files), CHUNK_SIZE):
-            chunk_files = saved_files[i:i + CHUNK_SIZE]
-            chunk_number += 1
-            
-            print(f"Batch {batch_id}: Processing chunk {chunk_number} with {len(chunk_files)} files")
-            
-            try:
-                # Update status
-                with storage_lock:
-                    if batch_id in processing_status:
-                        processing_status[batch_id]["current_chunk"] = chunk_number
-                        processing_status[batch_id]["status"] = f"processing_chunk_{chunk_number}"
-                
-                # Process chunk with timeout protection
-                chunk_start_time = time.time()
-                chunk_result = parse_documents(
-                    chunk_files,
-                    include_marginalia=include_marginalia,
-                    include_metadata_in_markdown=include_metadata,
-                    grounding_save_dir=grounding_dir
-                )
-                chunk_processing_time = time.time() - chunk_start_time
-                
-                print(f"Batch {batch_id}: Chunk {chunk_number} processed in {chunk_processing_time:.2f}s")
-                
-                # Serialize chunk results immediately to free memory
-                for doc in chunk_result:
-                    try:
-                        serialized_doc = serialize_parsed_document(doc)
-                        all_results.append(serialized_doc)
-                    except Exception as serialize_error:
-                        print(f"Error serializing document in batch {batch_id}: {serialize_error}")
-                        all_results.append({
-                            "markdown": f"Error serializing document: {serialize_error}",
-                            "chunks": [],
-                            "errors": [{"message": str(serialize_error), "page": 0}],
-                            "processing_time": 0
-                        })
-                
-                # Update progress
-                completed = i + len(chunk_files)
-                progress = int((completed / len(saved_files)) * 100)
-                
-                with storage_lock:
-                    if batch_id in processing_status:
-                        processing_status[batch_id]["completed_files"] = completed
-                        processing_status[batch_id]["progress"] = progress
-                
-                print(f"Batch {batch_id}: {completed}/{len(saved_files)} files processed ({progress}%)")
-                
-                # Memory and cleanup between chunks
-                try:
-                    memory_percent = psutil.virtual_memory().percent
-                    if memory_percent > 90:
-                        print(f"High memory usage ({memory_percent}%), pausing between chunks...")
-                        time.sleep(2)
-                except:
-                    pass
-                
-                # Clean up chunk files immediately after processing
-                for file_path in chunk_files:
-                    try:
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                    except Exception as cleanup_error:
-                        print(f"Error cleaning up chunk file {file_path}: {cleanup_error}")
-                        
-            except Exception as chunk_error:
-                print(f"Error processing chunk {chunk_number} in batch {batch_id}: {chunk_error}")
-                
-                # Add error documents for failed chunk
-                for _ in chunk_files:
-                    all_results.append({
-                        "markdown": f"Error processing chunk: {chunk_error}",
-                        "chunks": [],
-                        "errors": [{"message": str(chunk_error), "page": 0}],
-                        "processing_time": 0
-                    })
-                
-                # Continue with next chunk instead of failing entire batch
-                continue
-        
-        # Store final results
-        total_processing_time = time.time() - processing_status[batch_id]["start_time"]
-        
-        with storage_lock:
-            processed_docs[batch_id] = {
-                "result": all_results,
-                "files": [],  # Files already cleaned up
-                "processed_at": time.time(),
-                "groundings_dir": grounding_dir,
-                "processing_time": total_processing_time,
-                "file_count": len(saved_files),
-                "success_count": len([r for r in all_results if not r.get("errors")])
-            }
-            
-            processing_status[batch_id]["status"] = "completed"
-            processing_status[batch_id]["progress"] = 100
-            processing_status[batch_id]["completed_at"] = time.time()
-        
-        print(f"Batch {batch_id} completed successfully in {total_processing_time:.2f}s")
-        
+        size_mb = os.path.getsize(file_path) / (1024 * 1024)
+        if size_mb > 10:  # 10MB limit
+            return False, f"File too large: {size_mb:.2f}MB (max 10MB)"
+        return True, "OK"
     except Exception as e:
-        print(f"Batch {batch_id} failed with error: {e}")
-        
-        with storage_lock:
-            if batch_id in processing_status:
-                processing_status[batch_id]["status"] = "failed"
-                processing_status[batch_id]["error"] = str(e)
-                processing_status[batch_id]["completed_at"] = time.time()
-        
-        # Clean up files on failure
-        for file_path in saved_files:
-            try:
-                if os.path.exists(file_path):
-                    os.remove(file_path)
-            except:
-                pass
+        return False, f"Error checking file size: {e}"
 
 def serialize_parsed_document(parsed_doc):
     """
@@ -306,8 +181,7 @@ def serialize_chunks(chunks):
         return []
     
     serialized_chunks = []
-    # Limit chunks per document to prevent memory issues
-    for chunk in chunks[:50]:  # Maximum 50 chunks per document
+    for chunk in chunks:
         try:
             # Handle different chunk object types
             if hasattr(chunk, '__dict__'):
@@ -364,7 +238,7 @@ def serialize_grounding(grounding):
         return []
     
     serialized_grounding = []
-    for ground in grounding[:10]:  # Limit grounding objects
+    for ground in grounding:
         try:
             # Handle different types of grounding objects
             if hasattr(ground, '__dict__'):
@@ -508,97 +382,44 @@ def serialize_value(value):
     else:
         return str(value)
 
-def cleanup_old_results():
-    """Enhanced cleanup with memory pressure detection"""
-    current_time = time.time()
-    cutoff_time = current_time - 1800  # 30 minutes
-    
-    with storage_lock:
-        # Clean processed docs
-        keys_to_remove = []
-        for batch_id, data in processed_docs.items():
-            if data.get('processed_at', 0) < cutoff_time:
-                keys_to_remove.append(batch_id)
-        
-        for key in keys_to_remove:
-            try:
-                batch_data = processed_docs[key]
-                # Clean up files
-                for file_path in batch_data.get('files', []):
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                
-                # Clean up grounding directory
-                grounding_dir = batch_data.get('groundings_dir')
-                if grounding_dir and os.path.exists(grounding_dir):
-                    import shutil
-                    shutil.rmtree(grounding_dir)
-                
-                del processed_docs[key]
-                print(f"Cleaned up old batch: {key}")
-            except Exception as e:
-                print(f"Error cleaning up batch {key}: {e}")
-        
-        # Clean processing status
-        status_keys_to_remove = []
-        for batch_id, status in processing_status.items():
-            if status.get('start_time', 0) < cutoff_time:
-                status_keys_to_remove.append(batch_id)
-        
-        for key in status_keys_to_remove:
-            del processing_status[key]
-        
-        if keys_to_remove or status_keys_to_remove:
-            print(f"Cleanup completed: removed {len(keys_to_remove)} batches, {len(status_keys_to_remove)} status entries")
-
-def cleanup_loop():
-    """Background cleanup thread"""
-    while True:
-        time.sleep(CLEANUP_INTERVAL)
-        try:
-            cleanup_old_results()
-        except Exception as e:
-            print(f"Error in cleanup loop: {e}")
-
-# Start cleanup thread
-cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
-cleanup_thread.start()
-
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Enhanced health check with resource info"""
-    try:
-        memory_info = psutil.virtual_memory()
-        memory_usage = f"{memory_info.percent}%"
-    except:
-        memory_usage = "Unknown"
-    
-    with storage_lock:
-        active_batches = len(processing_status)
-        completed_batches = len(processed_docs)
-    
+    """Health check endpoint"""
+    log_memory_usage("Health check")
     return jsonify({
         "status": "healthy", 
-        "service": "document-processor-enhanced",
+        "service": "document-processor",
         "agentic_doc_version": agentic_doc_version,
-        "memory_usage": memory_usage,
-        "active_batches": active_batches,
-        "completed_batches": completed_batches,
-        "limits": {
-            "max_batch_size": MAX_BATCH_SIZE,
-            "max_file_size_mb": MAX_FILE_SIZE / 1024 / 1024,
-            "max_total_batch_size_mb": MAX_TOTAL_BATCH_SIZE / 1024 / 1024,
-            "memory_limit": f"{MEMORY_LIMIT}%",
-            "processing_timeout": PROCESSING_TIMEOUT,
-            "chunk_size": CHUNK_SIZE
-        }
+        "active_batches": len(processed_docs)
     })
+
+@app.route('/memory-status', methods=['GET'])
+def memory_status():
+    """Get current memory status"""
+    try:
+        process = psutil.Process(os.getpid())
+        memory_info = process.memory_info()
+        
+        # Get memory snapshot
+        snapshot = tracemalloc.take_snapshot()
+        top_stats = snapshot.statistics('lineno')
+        
+        return jsonify({
+            "memory_mb": memory_info.rss / 1024 / 1024,
+            "virtual_memory_mb": memory_info.vms / 1024 / 1024,
+            "active_batches": len(processed_docs),
+            "top_memory_consumers": [str(stat) for stat in top_stats[:5]]
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/process-documents', methods=['POST'])
 def process_documents():
     """
-    Enhanced document processing with async support for large batches
+    Process uploaded documents using the SDK with enhanced memory management
     """
+    log_memory_usage("START of process_documents")
+    
     if 'files' not in request.files:
         return jsonify({"error": "No files provided"}), 400
     
@@ -606,194 +427,176 @@ def process_documents():
     if not files or all(file.filename == '' for file in files):
         return jsonify({"error": "No files selected"}), 400
     
-    # Validate batch
-    is_valid, message = validate_batch_request(files)
-    if not is_valid:
-        return jsonify({"error": message}), 400
-    
     # Get optional parameters from request
     include_marginalia = request.form.get('include_marginalia', 'true').lower() == 'true'
     include_metadata = request.form.get('include_metadata', 'true').lower() == 'true'
     save_groundings = request.form.get('save_groundings', 'false').lower() == 'true'
-    force_async = request.form.get('async', 'false').lower() == 'true'
     
-    print(f"Processing batch: {len(files)} files, async={force_async}")
+    log_memory_usage("AFTER parameter extraction")
     
     # Save uploaded files to temp directory
     saved_files = []
-    batch_id = str(uuid.uuid4())
-    total_size = 0
-    
     for file in files:
         if file and file.filename:
             filename = secure_filename(file.filename)
-            temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{batch_id}_{filename}")
-            file.save(temp_path)
+            temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{uuid.uuid4()}_{filename}")
+            
+            # Save file in chunks to avoid loading entire file in memory
+            with open(temp_path, 'wb') as f:
+                while True:
+                    chunk = file.stream.read(8192)  # 8KB chunks
+                    if not chunk:
+                        break
+                    f.write(chunk)
+            
+            # Check file size
+            is_valid, message = check_file_size(temp_path)
+            if not is_valid:
+                # Clean up the file we just saved
+                try:
+                    os.remove(temp_path)
+                except:
+                    pass
+                return jsonify({"error": message}), 413
+            
             saved_files.append(temp_path)
-            total_size += os.path.getsize(temp_path)
+            log_memory_usage(f"AFTER saving file {filename}")
     
     if not saved_files:
         return jsonify({"error": "No valid files uploaded"}), 400
+    
+    # Force cleanup before processing
+    force_garbage_collection()
+    cleanup_temp_files()
+    log_memory_usage("BEFORE SDK processing")
     
     try:
         # Create grounding directory if needed
         grounding_dir = None
         if save_groundings:
-            grounding_dir = os.path.join(app.config['UPLOAD_FOLDER'], f"groundings_{batch_id}")
+            grounding_dir = os.path.join(app.config['UPLOAD_FOLDER'], f"groundings_{uuid.uuid4()}")
             os.makedirs(grounding_dir, exist_ok=True)
-        
-        # Decision: Use async processing for large batches or if forced
-        use_async = force_async or len(files) > 10 or total_size > 20 * 1024 * 1024  # 20MB
-        
-        if use_async:
-            # Submit to background processing
-            executor.submit(process_batch_async, batch_id, saved_files, include_marginalia, include_metadata, grounding_dir)
             
-            return jsonify({
-                "batch_id": batch_id,
-                "status": "processing",
-                "document_count": len(saved_files),
-                "total_size_mb": total_size / 1024 / 1024,
-                "async": True,
-                "estimated_time_minutes": len(saved_files) * 0.5,  # 30 seconds per file estimate
-                "message": "Batch submitted for background processing"
-            })
+        # Process documents using SDK with memory optimization
+        start_time = time.time()
         
-        else:
-            # Synchronous processing for small batches (original behavior)
-            start_time = time.time()
-            result = parse_documents(
-                saved_files,
-                include_marginalia=include_marginalia,
-                include_metadata_in_markdown=include_metadata,
-                grounding_save_dir=grounding_dir if save_groundings else None
+        # Process only one file at a time to reduce memory usage
+        result = parse_documents(
+            saved_files[:1],  # Process only the first file
+            include_marginalia=include_marginalia,
+            include_metadata_in_markdown=include_metadata,
+            grounding_save_dir=grounding_dir if save_groundings else None
+        )
+        
+        processing_time = time.time() - start_time
+        log_memory_usage("AFTER SDK processing")
+        
+        # Generate a unique ID for this batch of documents
+        batch_id = str(uuid.uuid4())
+        
+        # Serialize the result before storing with memory monitoring
+        log_memory_usage("BEFORE serialization")
+        serialized_result = []
+        
+        for i, doc in enumerate(result):
+            try:
+                serialized_doc = serialize_parsed_document(doc)
+                
+                # Limit markdown size to prevent memory issues
+                if len(serialized_doc.get('markdown', '')) > 1024 * 1024:  # 1MB limit
+                    serialized_doc['markdown'] = serialized_doc['markdown'][:1024*1024] + "... [TRUNCATED]"
+                
+                serialized_result.append(serialized_doc)
+                
+                # Clear reference to help with memory
+                doc = None
+                
+                log_memory_usage(f"SERIALIZED document {i+1}")
+                
+            except Exception as serialize_error:
+                print(f"[ERROR] Serialization failed for doc {i}: {serialize_error}")
+                serialized_result.append({
+                    "markdown": f"Serialization failed: {str(serialize_error)}",
+                    "chunks": [],
+                    "errors": [{"message": str(serialize_error), "page": 0}],
+                    "processing_time": 0
+                })
+        
+        # Clear the original result to free memory
+        result = None
+        force_garbage_collection()
+        log_memory_usage("AFTER serialization and GC")
+        
+        processed_docs[batch_id] = {
+            "result": serialized_result,
+            "files": saved_files,
+            "processed_at": time.time(),
+            "groundings_dir": grounding_dir if save_groundings else None
+        }
+        
+        # Clear serialized_result reference
+        serialized_result = None
+        force_garbage_collection()
+        
+        log_memory_usage("END of process_documents")
+        
+        # Format the response
+        formatted_result = {
+            "batch_id": batch_id,
+            "document_count": len(saved_files),
+            "processing_time_seconds": processing_time,
+            "status": "success",
+            "grounding_images_saved": save_groundings,
+            "warnings": []
+        }
+        
+        # Add warning about chunk type changes if using old version
+        if agentic_doc_version and (agentic_doc_version.startswith("0.0.") or agentic_doc_version.startswith("0.1.")):
+            formatted_result["warnings"].append(
+                "IMPORTANT: Chunk types are changing as of May 22, 2025. Please upgrade to agentic-doc v0.2.0 or later."
             )
-            processing_time = time.time() - start_time
-            
-            # Serialize the result before storing
-            serialized_result = []
-            for doc in result:
-                serialized_result.append(serialize_parsed_document(doc))
-            
-            with storage_lock:
-                processed_docs[batch_id] = {
-                    "result": serialized_result,
-                    "files": saved_files,
-                    "processed_at": time.time(),
-                    "groundings_dir": grounding_dir if save_groundings else None,
-                    "processing_time": processing_time,
-                    "file_count": len(saved_files),
-                    "success_count": len(serialized_result)
-                }
-            
-            return jsonify({
-                "batch_id": batch_id,
-                "document_count": len(saved_files),
-                "processing_time_seconds": processing_time,
-                "total_size_mb": total_size / 1024 / 1024,
-                "status": "completed",
-                "async": False,
-                "grounding_images_saved": save_groundings
-            })
+        
+        return jsonify(formatted_result)
     
     except Exception as e:
         print(f"Error processing documents: {e}")
+        log_memory_usage("ERROR state")
         
-        # Clean up files on error
+        # Emergency cleanup
         for file_path in saved_files:
             try:
                 if os.path.exists(file_path):
                     os.remove(file_path)
-            except Exception as cleanup_error:
-                print(f"Error cleaning up file {file_path}: {cleanup_error}")
+            except:
+                pass
+        
+        cleanup_temp_files()
+        force_garbage_collection()
         
         return jsonify({"error": str(e)}), 500
-
-@app.route('/batch-status/<batch_id>', methods=['GET'])
-def get_batch_status(batch_id):
-    """Get processing status for async batches"""
-    with storage_lock:
-        if batch_id in processing_status:
-            status = processing_status[batch_id].copy()
-            if "start_time" in status:
-                status["elapsed_time"] = time.time() - status["start_time"]
-            return jsonify(status)
-        elif batch_id in processed_docs:
-            batch_data = processed_docs[batch_id]
-            return jsonify({
-                "status": "completed", 
-                "progress": 100,
-                "file_count": batch_data.get("file_count", 0),
-                "success_count": batch_data.get("success_count", 0),
-                "processing_time": batch_data.get("processing_time", 0)
-            })
-        else:
-            return jsonify({"error": "Batch not found"}), 404
 
 @app.route('/get-document-data/<batch_id>', methods=['GET'])
 def get_document_data(batch_id):
     """
-    Retrieve processed document data by batch ID (legacy endpoint)
+    Retrieve processed document data by batch ID
     """
-    with storage_lock:
-        if batch_id not in processed_docs:
-            # Check if it's still processing
-            if batch_id in processing_status:
-                status = processing_status[batch_id]
-                return jsonify({
-                    "error": "Batch still processing",
-                    "status": status.get("status", "processing"),
-                    "progress": status.get("progress", 0)
-                }), 202
-            return jsonify({"error": "Batch ID not found"}), 404
+    log_memory_usage(f"GET document data for batch {batch_id}")
+    
+    if batch_id not in processed_docs:
+        return jsonify({"error": "Batch ID not found"}), 404
     
     try:
-        batch_data = processed_docs[batch_id]
+        # Return the processed document data (already serialized)
         return jsonify({
             "batch_id": batch_id,
-            "result": batch_data["result"],
-            "files": [os.path.basename(f) for f in batch_data.get("files", [])],
-            "processed_at": batch_data["processed_at"],
-            "processing_time": batch_data.get("processing_time", 0),
-            "file_count": batch_data.get("file_count", 0),
-            "success_count": batch_data.get("success_count", 0),
-            "groundings_dir": batch_data.get("groundings_dir")
+            "result": processed_docs[batch_id]["result"],
+            "files": [os.path.basename(f) for f in processed_docs[batch_id]["files"]],
+            "processed_at": processed_docs[batch_id]["processed_at"],
+            "groundings_dir": processed_docs[batch_id].get("groundings_dir")
         })
     except Exception as e:
         print(f"Error retrieving document data: {e}")
         return jsonify({"error": f"Error retrieving document data: {str(e)}"}), 500
-
-@app.route('/batch-results/<batch_id>', methods=['GET'])
-def get_batch_results(batch_id):
-    """Get batch processing results (new endpoint)"""
-    with storage_lock:
-        if batch_id not in processed_docs:
-            # Check if it's still processing
-            if batch_id in processing_status:
-                status = processing_status[batch_id]
-                return jsonify({
-                    "error": "Batch not completed",
-                    "status": status.get("status", "processing"),
-                    "progress": status.get("progress", 0),
-                    "completed_files": status.get("completed_files", 0),
-                    "total_files": status.get("total_files", 0)
-                }), 400
-            return jsonify({"error": "Batch not found"}), 404
-    
-    try:
-        batch_data = processed_docs[batch_id]
-        return jsonify({
-            "batch_id": batch_id,
-            "status": "completed",
-            "results": batch_data["result"],
-            "file_count": batch_data.get("file_count", 0),
-            "success_count": batch_data.get("success_count", 0),
-            "processing_time": batch_data.get("processing_time", 0),
-            "processed_at": batch_data["processed_at"]
-        })
-    except Exception as e:
-        print(f"Error retrieving batch results: {e}")
-        return jsonify({"error": f"Error retrieving batch results: {str(e)}"}), 500
 
 @app.route('/ask-question', methods=['POST'])
 def ask_question():
@@ -812,9 +615,8 @@ def ask_question():
     question = data["question"]
     
     # Check if the batch exists
-    with storage_lock:
-        if batch_id not in processed_docs:
-            return jsonify({"error": "Batch ID not found"}), 404
+    if batch_id not in processed_docs:
+        return jsonify({"error": "Batch ID not found"}), 404
     
     try:
         # Get document evidence
@@ -838,120 +640,54 @@ def ask_question():
 @app.route('/cleanup/<batch_id>', methods=['DELETE'])
 def cleanup_batch(batch_id):
     """
-    Clean up temporary files for a specific batch
+    Clean up temporary files for a specific batch with enhanced memory management
     """
-    with storage_lock:
-        # Check processed docs
-        if batch_id in processed_docs:
-            batch_data = processed_docs[batch_id]
-            
-            # Delete the temporary files
-            for file_path in batch_data.get("files", []):
-                try:
-                    if os.path.exists(file_path):
-                        os.remove(file_path)
-                except Exception as e:
-                    print(f"Error removing file {file_path}: {e}")
-            
-            # Clean up grounding directory if it exists
-            grounding_dir = batch_data.get("groundings_dir")
-            if grounding_dir and os.path.exists(grounding_dir):
-                try:
-                    import shutil
-                    shutil.rmtree(grounding_dir)
-                except Exception as e:
-                    print(f"Error removing grounding directory {grounding_dir}: {e}")
-            
-            # Remove from the processed docs dictionary
-            del processed_docs[batch_id]
-            cleanup_success = True
-        else:
-            cleanup_success = False
-        
-        # Also clean up processing status
-        if batch_id in processing_status:
-            del processing_status[batch_id]
-    
-    if cleanup_success:
-        return jsonify({"status": "success", "message": "Batch cleaned up successfully"})
-    else:
+    if batch_id not in processed_docs:
         return jsonify({"error": "Batch ID not found"}), 404
-
-@app.route('/stats', methods=['GET'])
-def get_stats():
-    """Get system statistics"""
+    
+    log_memory_usage(f"BEFORE cleanup batch {batch_id}")
+    
     try:
-        memory_info = psutil.virtual_memory()
+        # Delete the temporary files
+        for file_path in processed_docs[batch_id]["files"]:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+                    print(f"[CLEANUP] Removed file: {file_path}")
+            except Exception as e:
+                print(f"[CLEANUP] Error removing file {file_path}: {e}")
         
-        with storage_lock:
-            active_count = len(processing_status)
-            completed_count = len(processed_docs)
-            
-            # Calculate processing stats
-            total_files_processed = sum(
-                batch.get("file_count", 0) for batch in processed_docs.values()
-            )
-            total_success_files = sum(
-                batch.get("success_count", 0) for batch in processed_docs.values()
-            )
-            
-            # Get active batch details
-            active_batches = []
-            for batch_id, status in processing_status.items():
-                active_batches.append({
-                    "batch_id": batch_id,
-                    "status": status.get("status", "unknown"),
-                    "progress": status.get("progress", 0),
-                    "completed_files": status.get("completed_files", 0),
-                    "total_files": status.get("total_files", 0),
-                    "elapsed_time": time.time() - status.get("start_time", time.time())
-                })
+        # Clean up grounding directory if it exists
+        grounding_dir = processed_docs[batch_id].get("groundings_dir")
+        if grounding_dir and os.path.exists(grounding_dir):
+            try:
+                import shutil
+                shutil.rmtree(grounding_dir)
+                print(f"[CLEANUP] Removed grounding directory: {grounding_dir}")
+            except Exception as e:
+                print(f"[CLEANUP] Error removing grounding directory {grounding_dir}: {e}")
         
-        return jsonify({
-            "system": {
-                "memory_usage_percent": memory_info.percent,
-                "memory_available_gb": memory_info.available / (1024**3),
-                "uptime_seconds": time.time() - app.start_time if hasattr(app, 'start_time') else 0
-            },
-            "processing": {
-                "active_batches": active_count,
-                "completed_batches": completed_count,
-                "total_files_processed": total_files_processed,
-                "total_success_files": total_success_files,
-                "success_rate": (total_success_files / total_files_processed * 100) if total_files_processed > 0 else 100
-            },
-            "active_batches": active_batches,
-            "limits": {
-                "max_batch_size": MAX_BATCH_SIZE,
-                "max_file_size_mb": MAX_FILE_SIZE / 1024 / 1024,
-                "memory_limit_percent": MEMORY_LIMIT,
-                "processing_timeout_seconds": PROCESSING_TIMEOUT
-            }
-        })
+        # Remove from the processed docs dictionary
+        del processed_docs[batch_id]
+        
+        # Force garbage collection
+        force_garbage_collection()
+        
+        # Additional temp file cleanup
+        cleanup_temp_files()
+        
+        log_memory_usage(f"AFTER cleanup batch {batch_id}")
+        
+        return jsonify({"status": "success", "message": "Batch cleaned up successfully"})
+        
     except Exception as e:
-        return jsonify({"error": f"Error getting stats: {str(e)}"}), 500
-
-# Add startup time for uptime calculation
-app.start_time = time.time()
+        print(f"[CLEANUP] Error during cleanup: {e}")
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
+    # Log startup memory
+    log_memory_usage("Application startup")
+    
     # Set the port based on environment variable or default to 5001
     port = int(os.environ.get('PORT', 5001))
-    
-    print(f"Starting enhanced document processor on port {port}")
-    print(f"Configuration:")
-    print(f"  - Max batch size: {MAX_BATCH_SIZE} files")
-    print(f"  - Max file size: {MAX_FILE_SIZE / 1024 / 1024:.1f}MB")
-    print(f"  - Max total batch size: {MAX_TOTAL_BATCH_SIZE / 1024 / 1024:.1f}MB")
-    print(f"  - Memory limit: {MEMORY_LIMIT}%")
-    print(f"  - Processing timeout: {PROCESSING_TIMEOUT}s")
-    print(f"  - Chunk size: {CHUNK_SIZE} files")
-    print(f"  - Cleanup interval: {CLEANUP_INTERVAL}s")
-    
-    # Production vs Development configuration
-    if os.environ.get('FLASK_ENV') == 'production':
-        print("Running in production mode")
-        app.run(host='0.0.0.0', port=port, debug=False, threaded=True)
-    else:
-        print("Running in development mode")
-        app.run(host='0.0.0.0', port=port, debug=True, threaded=True)
+    app.run(host='0.0.0.0', port=port, debug=True)
