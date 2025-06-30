@@ -718,6 +718,5 @@ if __name__ == '__main__':
     print(f"🌐 Starting server on port {port}")
     print("✨ Ready to process medical documents!")
     
-    app.run(host='0.0.0.0', port=port, debug=False)_time = time.time() - start_time
-            confidence_score = calculate_confidence_score(extracted_data)
+    app.run(host='0.0.0.0', port=port, debug=False)
           
