@@ -1401,5 +1401,8 @@ if __name__ == '__main__':
         print("  - medical-questionnaire (MedicalQuestionnaire model)")
         print("  - test-results, audiogram, spirometry (TestResults model)")
     
+    # Use Render's PORT environment variable, default to 5001 for local development
     port = int(os.environ.get('PORT', 5001))
+    print(f"[STARTUP] Starting server on port {port}")
+    
     app.run(host='0.0.0.0', port=port, debug=False)  # Disable debug for production
