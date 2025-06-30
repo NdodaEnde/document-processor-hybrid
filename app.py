@@ -1,3 +1,8 @@
+"""
+Enhanced Flask Microservice with Agentic-Doc Structured Extraction
+Keeps all existing batch processing functionality + adds Pydantic model extraction
+"""
+
 from flask import Flask, request, jsonify, send_from_directory
 import os
 import tempfile
@@ -14,8 +19,11 @@ from functools import wraps
 from werkzeug.utils import secure_filename
 from flask_cors import CORS
 from dataclasses import dataclass
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Union, Any
 import queue
+
+# Pydantic imports for structured extraction
+from pydantic import BaseModel, Field
 
 # Start memory tracing
 tracemalloc.start()
@@ -65,6 +73,133 @@ class BatchProgress:
             "current_file": self.current_file,
             "errors": self.errors[-5:]  # Only return last 5 errors
         }
+
+# =============================================================================
+# PYDANTIC MODELS FOR STRUCTURED EXTRACTION
+# =============================================================================
+
+class EmployeeInfo(BaseModel):
+    """Employee information from medical documents"""
+    full_name: str = Field(description="Complete employee name including initials and surname")
+    company_name: str = Field(description="Name of the employing company or organization")
+    id_number: str = Field(description="South African ID number (13 digits)")
+    job_title: str = Field(description="Employee's job title or position")
+
+class MedicalTest(BaseModel):
+    """Individual medical test result"""
+    performed: bool = Field(description="Whether the test was actually performed (true/false)")
+    result: str = Field(description="The actual test result or outcome")
+
+class MedicalTests(BaseModel):
+    """All medical tests performed during examination"""
+    blood_test: Optional[MedicalTest] = Field(description="Blood test results")
+    vision_test: Optional[MedicalTest] = Field(description="Vision/eyesight test results including near/far vision")
+    hearing_test: Optional[MedicalTest] = Field(description="Hearing or audiometry test results")
+    lung_function: Optional[MedicalTest] = Field(description="Lung function or spirometry test results")
+    x_ray: Optional[MedicalTest] = Field(description="Chest X-ray examination results")
+    drug_screen: Optional[MedicalTest] = Field(description="Drug screening or substance abuse test results")
+    depth_test: Optional[MedicalTest] = Field(description="Depth perception and side vision test")
+    night_vision: Optional[MedicalTest] = Field(description="Night vision test results")
+    heights_test: Optional[MedicalTest] = Field(description="Working at heights fitness assessment")
+
+class MedicalExamination(BaseModel):
+    """Medical examination details and results"""
+    examination_date: str = Field(description="Date when the medical examination was conducted (DD-MM-YYYY format)")
+    expiry_date: str = Field(description="Date when the medical certificate expires (DD-MM-YYYY format)")
+    examination_type: str = Field(description="Type of examination: PRE-EMPLOYMENT, PERIODICAL, or EXIT")
+    fitness_status: str = Field(description="Overall fitness declaration: FIT, FIT_WITH_RESTRICTIONS, FIT_WITH_CONDITIONS, TEMPORARILY_UNFIT, or UNFIT")
+    restrictions: List[str] = Field(description="List of any medical restrictions or limitations identified")
+    comments: Optional[str] = Field(description="Additional comments or notes from the examining physician")
+
+class MedicalPractitioner(BaseModel):
+    """Medical practitioner who conducted the examination"""
+    doctor_name: str = Field(description="Name of the examining doctor or medical practitioner")
+    practice_number: str = Field(description="Medical practice registration number")
+    signature_present: bool = Field(description="Whether a signature is present in the document")
+    stamp_present: bool = Field(description="Whether an official medical stamp is present")
+
+class CertificateOfFitness(BaseModel):
+    """Complete Certificate of Fitness document structure"""
+    document_classification: str = Field(description="Document type classification")
+    employee_info: EmployeeInfo = Field(description="Employee personal and employment information")
+    medical_examination: MedicalExamination = Field(description="Medical examination details and results")
+    medical_tests: MedicalTests = Field(description="All medical tests performed and their results")
+    medical_practitioner: MedicalPractitioner = Field(description="Information about the examining medical practitioner")
+
+class MedicalQuestionnaire(BaseModel):
+    """Medical questionnaire or health assessment form"""
+    document_classification: str = Field(description="Document type classification")
+    patient_info: EmployeeInfo = Field(description="Patient personal information")
+    medical_history: Dict[str, Any] = Field(description="Medical history responses and health questions")
+    symptoms: List[str] = Field(description="Reported symptoms or health concerns")
+    medications: List[str] = Field(description="Current medications being taken")
+    allergies: List[str] = Field(description="Known allergies or adverse reactions")
+
+class TestResults(BaseModel):
+    """Standalone medical test results document"""
+    document_classification: str = Field(description="Document type classification")
+    patient_info: EmployeeInfo = Field(description="Patient personal information")
+    test_results: Dict[str, str] = Field(description="Laboratory or diagnostic test results")
+    test_date: str = Field(description="Date when tests were conducted")
+    reference_ranges: Dict[str, str] = Field(description="Normal reference ranges for test values")
+
+# =============================================================================
+# UTILITY FUNCTIONS
+# =============================================================================
+
+def get_extraction_model(document_type: str):
+    """Return the appropriate Pydantic model for document type"""
+    type_mapping = {
+        'certificate-fitness': CertificateOfFitness,
+        'certificate': CertificateOfFitness,
+        'medical-questionnaire': MedicalQuestionnaire,
+        'questionnaire': MedicalQuestionnaire,
+        'test-results': TestResults,
+        'lab-results': TestResults,
+        'x-ray-report': TestResults,
+        'audiogram': TestResults,
+        'spirometry': TestResults
+    }
+    
+    return type_mapping.get(document_type.lower(), CertificateOfFitness)
+
+def calculate_confidence_score(extracted_data: Dict[str, Any]) -> float:
+    """Calculate confidence score based on extracted data completeness"""
+    total_fields = 0
+    filled_fields = 0
+    
+    def count_fields(obj, path=""):
+        nonlocal total_fields, filled_fields
+        
+        if isinstance(obj, dict):
+            for key, value in obj.items():
+                if isinstance(value, (dict, list)):
+                    count_fields(value, f"{path}.{key}" if path else key)
+                else:
+                    total_fields += 1
+                    if value and str(value).strip() and str(value).lower() not in ['n/a', 'none', 'null', '']:
+                        filled_fields += 1
+        elif isinstance(obj, list):
+            for item in obj:
+                count_fields(item, path)
+    
+    count_fields(extracted_data)
+    
+    if total_fields == 0:
+        return 0.0
+    
+    base_confidence = filled_fields / total_fields
+    
+    # Bonus for critical fields
+    critical_bonuses = 0
+    if extracted_data.get('employee_info', {}).get('full_name'):
+        critical_bonuses += 0.1
+    if extracted_data.get('employee_info', {}).get('id_number'):
+        critical_bonuses += 0.1
+    if extracted_data.get('medical_examination', {}).get('examination_date'):
+        critical_bonuses += 0.1
+    
+    return min(1.0, base_confidence + critical_bonuses)
 
 def log_memory_usage(context=""):
     """Log current memory usage and top consumers"""
@@ -117,15 +252,18 @@ def check_agentic_doc_version():
 agentic_doc_version = check_agentic_doc_version()
 
 try:
-    from agentic_doc.parse import parse_documents
-    print("Using real agentic_doc SDK")
+    from agentic_doc.parse import parse_documents, parse
+    print("Using real agentic_doc SDK with structured extraction support")
+    AGENTIC_DOC_AVAILABLE = True
 except ImportError:
     try:
         from next_pdf_app.backend.mock_sdk import parse_documents
         print("Using mock SDK from next-pdf-app")
+        AGENTIC_DOC_AVAILABLE = False
     except ImportError:
         from mock_sdk import parse_documents
         print("Using local mock SDK")
+        AGENTIC_DOC_AVAILABLE = False
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
@@ -172,51 +310,63 @@ def estimate_completion_time(progress: BatchProgress) -> Optional[float]:
     
     return time.time() + estimated_remaining_time
 
-def process_single_file(file_path: str, batch_id: str, include_marginalia: bool, 
-                       include_metadata: bool, save_groundings: bool, grounding_dir: str) -> Dict:
-    """Process a single file and return the result"""
+def process_single_file_enhanced(file_path: str, batch_id: str, document_type: str, 
+                                extraction_method: str, include_marginalia: bool, 
+                                include_metadata: bool, save_groundings: bool, grounding_dir: str) -> Dict:
+    """Enhanced process single file with structured extraction options"""
     filename = os.path.basename(file_path)
     
     try:
-        print(f"[BATCH {batch_id}] Processing file: {filename}")
+        print(f"[BATCH {batch_id}] Processing file: {filename} (Type: {document_type}, Method: {extraction_method})")
         
         # Update progress
         with processing_lock:
             if batch_id in batch_progress:
                 batch_progress[batch_id].current_file = filename
         
-        # Process single file with SDK
         start_time = time.time()
-        result = parse_documents(
-            [file_path],
-            include_marginalia=include_marginalia,
-            include_metadata_in_markdown=include_metadata,
-            grounding_save_dir=grounding_dir if save_groundings else None
-        )
+        
+        if extraction_method == 'structured' and AGENTIC_DOC_AVAILABLE:
+            # Use structured extraction with Pydantic models
+            result = process_with_structured_extraction(file_path, document_type)
+        else:
+            # Use traditional OCR processing
+            result = parse_documents(
+                [file_path],
+                include_marginalia=include_marginalia,
+                include_metadata_in_markdown=include_metadata,
+                grounding_save_dir=grounding_dir if save_groundings else None
+            )
+            
+            # Convert to standard format
+            if result and len(result) > 0:
+                result = {
+                    "extraction_method": "ocr_only",
+                    "raw_data": serialize_parsed_document(result[0]),
+                    "structured_data": None,
+                    "confidence_score": 0.5  # Default confidence for OCR-only
+                }
+            else:
+                raise Exception("No result returned from OCR processing")
+        
         processing_time = time.time() - start_time
         
-        # Serialize result
-        if result and len(result) > 0:
-            serialized_doc = serialize_parsed_document(result[0])
-            
-            # Limit markdown size for memory efficiency
-            if len(serialized_doc.get('markdown', '')) > 512 * 1024:  # 512KB limit per file
-                serialized_doc['markdown'] = serialized_doc['markdown'][:512*1024] + "... [TRUNCATED]"
-            
-            serialized_doc['processing_time'] = processing_time
-            serialized_doc['filename'] = filename
-            
-            print(f"[BATCH {batch_id}] ✅ Completed {filename} in {processing_time:.2f}s")
-            
-            return {
-                "status": "success",
-                "filename": filename,
-                "data": serialized_doc,
-                "processing_time": processing_time
-            }
-        else:
-            raise Exception("No result returned from SDK")
-            
+        # Add processing metadata
+        if isinstance(result, dict):
+            result['processing_time'] = processing_time
+            result['filename'] = filename
+            result['document_type'] = document_type
+            result['extraction_method'] = extraction_method
+        
+        print(f"[BATCH {batch_id}] ✅ Completed {filename} in {processing_time:.2f}s (Method: {extraction_method})")
+        
+        return {
+            "status": "success",
+            "filename": filename,
+            "data": result,
+            "processing_time": processing_time
+        }
+        
     except Exception as e:
         error_msg = f"Failed to process {filename}: {str(e)}"
         print(f"[BATCH {batch_id}] ❌ {error_msg}")
@@ -228,11 +378,67 @@ def process_single_file(file_path: str, batch_id: str, include_marginalia: bool,
             "processing_time": 0
         }
 
-def process_batch_concurrent(saved_files: List[str], batch_id: str, include_marginalia: bool,
-                           include_metadata: bool, save_groundings: bool) -> Dict:
-    """Process multiple files concurrently"""
+def process_with_structured_extraction(file_path: str, document_type: str) -> Dict:
+    """Process file using agentic-doc with Pydantic model extraction"""
+    try:
+        print(f"[STRUCTURED] Processing {file_path} as {document_type}")
+        
+        # Get the appropriate Pydantic model
+        extraction_model = get_extraction_model(document_type)
+        print(f"[STRUCTURED] Using model: {extraction_model.__name__}")
+        
+        # Use agentic-doc parse with extraction model
+        results = parse(file_path, extraction_model=extraction_model)
+        
+        if not results or len(results) == 0:
+            raise Exception("No results returned from structured extraction")
+        
+        result = results[0]
+        
+        # Extract structured data
+        extracted_data = result.extraction.dict() if hasattr(result.extraction, 'dict') else result.extraction
+        extraction_metadata = getattr(result, 'extraction_metadata', {})
+        extraction_error = getattr(result, 'extraction_error', None)
+        
+        # Calculate confidence
+        confidence_score = calculate_confidence_score(extracted_data)
+        
+        print(f"[STRUCTURED] Extraction completed. Confidence: {confidence_score:.3f}")
+        
+        return {
+            "extraction_method": "structured_pydantic",
+            "structured_data": extracted_data,
+            "raw_data": None,  # Could add OCR fallback here if needed
+            "confidence_score": confidence_score,
+            "extraction_metadata": extraction_metadata,
+            "extraction_error": str(extraction_error) if extraction_error else None
+        }
+        
+    except Exception as e:
+        print(f"[STRUCTURED] Error: {e}")
+        # Fallback to OCR processing
+        print(f"[STRUCTURED] Falling back to OCR processing for {file_path}")
+        
+        try:
+            ocr_result = parse_documents([file_path])
+            if ocr_result and len(ocr_result) > 0:
+                return {
+                    "extraction_method": "ocr_fallback",
+                    "structured_data": None,
+                    "raw_data": serialize_parsed_document(ocr_result[0]),
+                    "confidence_score": 0.3,  # Lower confidence for fallback
+                    "extraction_error": f"Structured extraction failed: {str(e)}, used OCR fallback"
+                }
+        except Exception as ocr_error:
+            raise Exception(f"Both structured extraction and OCR fallback failed: {str(e)}, {str(ocr_error)}")
+
+def process_batch_concurrent_enhanced(saved_files: List[str], batch_id: str, document_types: List[str],
+                                    extraction_method: str, include_marginalia: bool,
+                                    include_metadata: bool, save_groundings: bool) -> Dict:
+    """Enhanced batch processing with document type awareness"""
     
-    print(f"[BATCH {batch_id}] Starting concurrent processing of {len(saved_files)} files")
+    print(f"[BATCH {batch_id}] Starting enhanced concurrent processing of {len(saved_files)} files")
+    print(f"[BATCH {batch_id}] Extraction method: {extraction_method}")
     
     # Initialize progress tracking
     progress = BatchProgress(
@@ -257,12 +463,13 @@ def process_batch_concurrent(saved_files: List[str], batch_id: str, include_marg
     results = []
     futures = []
     
-    # Submit all files for processing
-    for file_path in saved_files:
+    # Submit all files for processing with their document types
+    for i, file_path in enumerate(saved_files):
+        document_type = document_types[i] if i < len(document_types) else 'certificate-fitness'
         future = executor.submit(
-            process_single_file,
-            file_path, batch_id, include_marginalia, 
-            include_metadata, save_groundings, grounding_dir
+            process_single_file_enhanced,
+            file_path, batch_id, document_type, extraction_method,
+            include_marginalia, include_metadata, save_groundings, grounding_dir
         )
         futures.append(future)
     
@@ -329,10 +536,11 @@ def process_batch_concurrent(saved_files: List[str], batch_id: str, include_marg
         "successful_count": len(successful_results),
         "failed_count": len(failed_results),
         "total_processing_time": total_processing_time,
-        "grounding_dir": grounding_dir
+        "grounding_dir": grounding_dir,
+        "extraction_method": extraction_method
     }
 
-# Include all the existing serialization functions (keeping them the same)
+# Keep all the existing serialization functions unchanged
 def serialize_parsed_document(parsed_doc):
     """Convert ParsedDocument object to JSON-serializable dictionary"""
     try:
@@ -546,9 +754,13 @@ def serialize_value(value):
     else:
         return str(value)
 
+# =============================================================================
+# API ROUTES
+# =============================================================================
+
 @app.route('/health', methods=['GET'])
 def health_check():
-    """Enhanced health check with batch processing info"""
+    """Enhanced health check with structured extraction info"""
     log_memory_usage("Health check")
     
     with processing_lock:
@@ -557,14 +769,19 @@ def health_check():
     
     return jsonify({
         "status": "healthy", 
-        "service": "document-processor",
+        "service": "enhanced-document-processor",
         "agentic_doc_version": agentic_doc_version,
+        "structured_extraction_available": AGENTIC_DOC_AVAILABLE,
         "active_batches": len(processed_docs),
         "processing_batches": processing_batches,
         "total_tracked_batches": active_batches,
         "concurrent_processing": True,
-        "max_workers": 3,
-        "batch_size": 5
+        "max_workers": 4,
+        "batch_size": 5,
+        "supported_document_types": [
+            "certificate-fitness", "medical-questionnaire", "test-results", 
+            "audiogram", "spirometry", "x-ray-report"
+        ]
     })
 
 @app.route('/batch-status/<batch_id>', methods=['GET'])
@@ -579,8 +796,8 @@ def get_batch_status(batch_id):
 
 @app.route('/process-documents', methods=['POST'])
 def process_documents():
-    """Enhanced process_documents with concurrent batch processing"""
-    log_memory_usage("START of batch process_documents")
+    """Enhanced process_documents with structured extraction support"""
+    log_memory_usage("START of enhanced batch process_documents")
     
     if 'files' not in request.files:
         return jsonify({"error": "No files provided"}), 400
@@ -589,13 +806,33 @@ def process_documents():
     if not files or all(file.filename == '' for file in files):
         return jsonify({"error": "No files selected"}), 400
     
-    # Get optional parameters
+    # Enhanced parameters
     include_marginalia = request.form.get('include_marginalia', 'true').lower() == 'true'
     include_metadata = request.form.get('include_metadata', 'true').lower() == 'true'
     save_groundings = request.form.get('save_groundings', 'false').lower() == 'true'
     
-    print(f"[BATCH] Processing {len(files)} files concurrently")
+    # NEW: Extraction method parameter
+    extraction_method = request.form.get('extraction_method', 'structured')  # 'structured', 'ocr', 'hybrid'
+    
+    # NEW: Document types for each file (JSON array)
+    document_types_json = request.form.get('document_types', '[]')
+    try:
+        document_types = json.loads(document_types_json)
+    except:
+        document_types = []
+    
+    print(f"[BATCH] Processing {len(files)} files with extraction method: {extraction_method}")
+    print(f"[BATCH] Document types: {document_types}")
     log_memory_usage("AFTER parameter extraction")
+    
+    # Validate extraction method
+    if extraction_method not in ['structured', 'ocr', 'hybrid']:
+        return jsonify({"error": "Invalid extraction_method. Use 'structured', 'ocr', or 'hybrid'"}), 400
+    
+    # Check if structured extraction is available
+    if extraction_method in ['structured', 'hybrid'] and not AGENTIC_DOC_AVAILABLE:
+        print(f"[WARNING] Structured extraction requested but agentic-doc not available. Falling back to OCR.")
+        extraction_method = 'ocr'
     
     # Save uploaded files
     saved_files = []
@@ -638,20 +875,20 @@ def process_documents():
     batch_id = str(uuid.uuid4())
     
     try:
-        # Process files concurrently
+        # Process files concurrently with enhanced method
         force_garbage_collection()
-        log_memory_usage("BEFORE concurrent processing")
+        log_memory_usage("BEFORE enhanced concurrent processing")
         
         start_time = time.time()
         
-        # Process batch concurrently
-        batch_result = process_batch_concurrent(
-            saved_files, batch_id, include_marginalia, 
-            include_metadata, save_groundings
+        # Use enhanced batch processing
+        batch_result = process_batch_concurrent_enhanced(
+            saved_files, batch_id, document_types, extraction_method,
+            include_marginalia, include_metadata, save_groundings
         )
         
         processing_time = time.time() - start_time
-        log_memory_usage("AFTER concurrent processing")
+        log_memory_usage("AFTER enhanced concurrent processing")
         
         # Store results
         processed_docs[batch_id] = {
@@ -664,14 +901,15 @@ def process_documents():
                 "total_files": batch_result["total_files"],
                 "successful_count": batch_result["successful_count"],
                 "failed_count": batch_result["failed_count"],
-                "total_processing_time": batch_result["total_processing_time"]
+                "total_processing_time": batch_result["total_processing_time"],
+                "extraction_method": batch_result["extraction_method"]
             }
         }
         
         force_garbage_collection()
-        log_memory_usage("END of batch process_documents")
+        log_memory_usage("END of enhanced batch process_documents")
         
-        # Response
+        # Enhanced response
         response = {
             "batch_id": batch_id,
             "document_count": len(saved_files),
@@ -679,6 +917,8 @@ def process_documents():
             "failed_count": batch_result["failed_count"],
             "processing_time_seconds": processing_time,
             "status": "success",
+            "extraction_method": extraction_method,
+            "structured_extraction_used": extraction_method in ['structured', 'hybrid'],
             "grounding_images_saved": save_groundings,
             "concurrent_processing": True,
             "warnings": []
@@ -694,7 +934,7 @@ def process_documents():
         return jsonify(response)
         
     except Exception as e:
-        print(f"Error in batch processing: {e}")
+        print(f"Error in enhanced batch processing: {e}")
         log_memory_usage("ERROR state")
         
         # Emergency cleanup
@@ -711,7 +951,7 @@ def process_documents():
 
 @app.route('/get-document-data/<batch_id>', methods=['GET'])
 def get_document_data(batch_id):
-    """Retrieve processed document data by batch ID with stats"""
+    """Retrieve processed document data by batch ID with enhanced stats"""
     log_memory_usage(f"GET document data for batch {batch_id}")
     
     if batch_id not in processed_docs:
@@ -720,6 +960,18 @@ def get_document_data(batch_id):
     try:
         batch_data = processed_docs[batch_id]
         
+        # Calculate extraction method statistics
+        extraction_methods = {}
+        confidence_scores = []
+        
+        for result in batch_data["result"]:
+            method = result.get("extraction_method", "unknown")
+            extraction_methods[method] = extraction_methods.get(method, 0) + 1
+            
+            confidence = result.get("confidence_score")
+            if confidence is not None:
+                confidence_scores.append(confidence)
+        
         response = {
             "batch_id": batch_id,
             "result": batch_data["result"],
@@ -727,7 +979,13 @@ def get_document_data(batch_id):
             "processed_at": batch_data["processed_at"],
             "groundings_dir": batch_data.get("groundings_dir"),
             "failed_results": batch_data.get("failed_results", []),
-            "processing_stats": batch_data.get("processing_stats", {})
+            "processing_stats": batch_data.get("processing_stats", {}),
+            "extraction_stats": {
+                "methods_used": extraction_methods,
+                "avg_confidence": sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0,
+                "min_confidence": min(confidence_scores) if confidence_scores else 0,
+                "max_confidence": max(confidence_scores) if confidence_scores else 0
+            }
         }
         
         return jsonify(response)
@@ -736,6 +994,88 @@ def get_document_data(batch_id):
         print(f"Error retrieving document data: {e}")
         return jsonify({"error": f"Error retrieving document data: {str(e)}"}), 500
 
+@app.route('/extract-structured', methods=['POST'])
+def extract_structured():
+    """NEW: Dedicated endpoint for structured extraction with specific document types"""
+    if 'files' not in request.files:
+        return jsonify({"error": "No files provided"}), 400
+    
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({"error": "No files selected"}), 400
+    
+    # Get document types for each file
+    document_types_json = request.form.get('document_types', '[]')
+    try:
+        document_types = json.loads(document_types_json)
+    except:
+        return jsonify({"error": "Invalid document_types JSON"}), 400
+    
+    if len(document_types) != len(files):
+        return jsonify({"error": "Number of document_types must match number of files"}), 400
+    
+    # Check if structured extraction is available
+    if not AGENTIC_DOC_AVAILABLE:
+        return jsonify({"error": "Structured extraction not available - agentic-doc not installed"}), 503
+    
+    print(f"[STRUCTURED] Processing {len(files)} files with specific document types")
+    
+    # Save files temporarily
+    saved_files = []
+    for file in files:
+        if file and file.filename:
+            filename = secure_filename(file.filename)
+            temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{uuid.uuid4()}_{filename}")
+            file.save(temp_path)
+            saved_files.append(temp_path)
+    
+    try:
+        results = []
+        
+        for i, file_path in enumerate(saved_files):
+            document_type = document_types[i]
+            filename = os.path.basename(file_path)
+            
+            try:
+                print(f"[STRUCTURED] Processing {filename} as {document_type}")
+                result = process_with_structured_extraction(file_path, document_type)
+                result["filename"] = filename
+                result["document_type"] = document_type
+                results.append(result)
+                
+            except Exception as e:
+                print(f"[STRUCTURED] Error processing {filename}: {e}")
+                results.append({
+                    "filename": filename,
+                    "document_type": document_type,
+                    "extraction_method": "failed",
+                    "structured_data": None,
+                    "raw_data": None,
+                    "confidence_score": 0,
+                    "extraction_error": str(e)
+                })
+        
+        return jsonify({
+            "status": "success",
+            "results": results,
+            "total_files": len(files),
+            "extraction_method": "structured_pydantic"
+        })
+        
+    except Exception as e:
+        print(f"Error in structured extraction: {e}")
+        return jsonify({"error": str(e)}), 500
+    
+    finally:
+        # Cleanup temporary files
+        for file_path in saved_files:
+            try:
+                if os.path.exists(file_path):
+                    os.remove(file_path)
+            except:
+                pass
+
+# Keep all existing routes unchanged
 @app.route('/ask-question', methods=['POST'])
 def ask_question():
     """Answer a question about processed documents"""
@@ -823,7 +1163,7 @@ def cleanup_batch(batch_id):
 
 @app.route('/list-batches', methods=['GET'])
 def list_batches():
-    """List all active batches with their status"""
+    """List all active batches with enhanced extraction info"""
     try:
         batches = []
         
@@ -837,7 +1177,8 @@ def list_batches():
                 "successful_count": stats.get("successful_count", len(batch_data.get("result", []))),
                 "failed_count": stats.get("failed_count", len(batch_data.get("failed_results", []))),
                 "processed_at": batch_data.get("processed_at"),
-                "processing_time": stats.get("total_processing_time", 0)
+                "processing_time": stats.get("total_processing_time", 0),
+                "extraction_method": stats.get("extraction_method", "unknown")
             })
         
         # Add in-progress batches from batch_progress
@@ -865,7 +1206,7 @@ def list_batches():
 
 @app.route('/memory-status', methods=['GET'])
 def memory_status():
-    """Enhanced memory status with batch processing info"""
+    """Enhanced memory status with extraction info"""
     try:
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
@@ -883,6 +1224,7 @@ def memory_status():
             "completed_batches": len(processed_docs),
             "active_batches": active_batches,
             "processing_batches": processing_batches,
+            "structured_extraction_available": AGENTIC_DOC_AVAILABLE,
             "thread_pool_active": True,
             "max_workers": 4,
             "top_memory_consumers": [str(stat) for stat in top_stats[:5]]
@@ -892,7 +1234,7 @@ def memory_status():
 
 @app.route('/batch-stats', methods=['GET'])
 def batch_stats():
-    """Get comprehensive batch processing statistics"""
+    """Get comprehensive batch processing statistics with extraction method breakdown"""
     try:
         # Calculate statistics from processed batches
         total_files_processed = 0
@@ -901,18 +1243,32 @@ def batch_stats():
         total_processing_time = 0
         batch_count = len(processed_docs)
         
+        extraction_method_counts = {}
+        confidence_scores = []
+        
         for batch_data in processed_docs.values():
             stats = batch_data.get("processing_stats", {})
             total_files_processed += stats.get("total_files", 0)
             total_successful += stats.get("successful_count", 0)
             total_failed += stats.get("failed_count", 0)
             total_processing_time += stats.get("total_processing_time", 0)
+            
+            # Track extraction methods
+            method = stats.get("extraction_method", "unknown")
+            extraction_method_counts[method] = extraction_method_counts.get(method, 0) + stats.get("total_files", 0)
+            
+            # Collect confidence scores
+            for result in batch_data.get("result", []):
+                confidence = result.get("confidence_score")
+                if confidence is not None:
+                    confidence_scores.append(confidence)
         
         # Calculate averages
         avg_files_per_batch = total_files_processed / batch_count if batch_count > 0 else 0
         avg_processing_time_per_batch = total_processing_time / batch_count if batch_count > 0 else 0
         avg_processing_time_per_file = total_processing_time / total_files_processed if total_files_processed > 0 else 0
         success_rate = (total_successful / total_files_processed * 100) if total_files_processed > 0 else 0
+        avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else 0
         
         with processing_lock:
             currently_processing = len([p for p in batch_progress.values() if p.status == "processing"])
@@ -924,12 +1280,17 @@ def batch_stats():
                 "total_successful_files": total_successful,
                 "total_failed_files": total_failed,
                 "overall_success_rate": round(success_rate, 2),
-                "currently_processing_batches": currently_processing
+                "currently_processing_batches": currently_processing,
+                "average_confidence_score": round(avg_confidence, 3)
             },
             "averages": {
                 "files_per_batch": round(avg_files_per_batch, 2),
                 "processing_time_per_batch_seconds": round(avg_processing_time_per_batch, 2),
                 "processing_time_per_file_seconds": round(avg_processing_time_per_file, 2)
+            },
+            "extraction_methods": {
+                "method_distribution": extraction_method_counts,
+                "structured_extraction_available": AGENTIC_DOC_AVAILABLE
             },
             "performance": {
                 "concurrent_processing": True,
@@ -943,10 +1304,17 @@ def batch_stats():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    log_memory_usage("Application startup")
-    print("[STARTUP] Enhanced batch processing microservice starting...")
+    log_memory_usage("Enhanced application startup")
+    print("[STARTUP] Enhanced document processing microservice starting...")
     print(f"[STARTUP] Concurrent processing enabled: max_workers=4, batch_size=5")
+    print(f"[STARTUP] Structured extraction available: {AGENTIC_DOC_AVAILABLE}")
     print(f"[STARTUP] File size limit: 25MB per file, 100MB total upload")
+    
+    if AGENTIC_DOC_AVAILABLE:
+        print("[STARTUP] Supported document types with structured extraction:")
+        print("  - certificate-fitness (CertificateOfFitness model)")
+        print("  - medical-questionnaire (MedicalQuestionnaire model)")
+        print("  - test-results, audiogram, spirometry (TestResults model)")
     
     port = int(os.environ.get('PORT', 5001))
     app.run(host='0.0.0.0', port=port, debug=False)  # Disable debug for production
