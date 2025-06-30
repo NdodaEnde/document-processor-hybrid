@@ -256,14 +256,99 @@ try:
     print("Using real agentic_doc SDK with structured extraction support")
     AGENTIC_DOC_AVAILABLE = True
 except ImportError:
-    try:
-        from next_pdf_app.backend.mock_sdk import parse_documents
-        print("Using mock SDK from next-pdf-app")
-        AGENTIC_DOC_AVAILABLE = False
-    except ImportError:
-        from mock_sdk import parse_documents
-        print("Using local mock SDK")
-        AGENTIC_DOC_AVAILABLE = False
+    print("agentic-doc not available. Creating mock functions.")
+    AGENTIC_DOC_AVAILABLE = False
+    
+    # Create mock functions when agentic-doc is not available
+    def parse_documents(file_paths, **kwargs):
+        """Mock parse_documents function"""
+        print(f"[MOCK] Processing {len(file_paths)} files with mock SDK")
+        
+        mock_results = []
+        for file_path in file_paths:
+            mock_doc = type('MockParsedDocument', (), {
+                'markdown': f'Mock markdown content for {os.path.basename(file_path)}',
+                'chunks': [],
+                'errors': [],
+                'processing_time': 1.0
+            })()
+            mock_results.append(mock_doc)
+        
+        return mock_results
+    
+    def parse(file_path, extraction_model=None):
+        """Mock parse function for structured extraction"""
+        print(f"[MOCK] Structured extraction for {os.path.basename(file_path)}")
+        
+        # Create mock extraction based on model type
+        if extraction_model:
+            model_name = extraction_model.__name__
+            print(f"[MOCK] Using model: {model_name}")
+            
+            if 'Certificate' in model_name:
+                mock_extraction = {
+                    "employee_info": {
+                        "full_name": "Mock Employee Name",
+                        "company_name": "Mock Company",
+                        "id_number": "1234567890123",
+                        "job_title": "Mock Job"
+                    },
+                    "medical_examination": {
+                        "examination_date": "01-01-2024",
+                        "examination_type": "PERIODICAL",
+                        "fitness_status": "FIT",
+                        "restrictions": [],
+                        "expiry_date": "01-01-2025"
+                    },
+                    "medical_tests": {
+                        "vision_test": {"performed": True, "result": "20/20"},
+                        "hearing_test": {"performed": True, "result": "NORMAL"}
+                    },
+                    "medical_practitioner": {
+                        "doctor_name": "Dr. Mock",
+                        "practice_number": "1234567",
+                        "signature_present": True,
+                        "stamp_present": True
+                    }
+                }
+            elif 'Questionnaire' in model_name:
+                mock_extraction = {
+                    "patient_info": {
+                        "full_name": "Mock Patient",
+                        "company_name": "Mock Company",
+                        "id_number": "1234567890123",
+                        "job_title": "Mock Job"
+                    },
+                    "medical_history": {"chronic_conditions": [], "medications": []},
+                    "symptoms": [],
+                    "medications": [],
+                    "allergies": []
+                }
+            else:
+                mock_extraction = {
+                    "patient_info": {
+                        "full_name": "Mock Patient",
+                        "company_name": "Mock Company",
+                        "id_number": "1234567890123",
+                        "job_title": "Mock Job"
+                    },
+                    "test_results": {"result": "NORMAL"},
+                    "test_date": "01-01-2024",
+                    "reference_ranges": {}
+                }
+        else:
+            mock_extraction = {"mock_data": "No extraction model provided"}
+        
+        # Create mock result object
+        mock_result = type('MockParseResult', (), {
+            'extraction': type('MockExtraction', (), {
+                'dict': lambda: mock_extraction
+            })(),
+            'extraction_metadata': {},
+            'extraction_error': None
+        })()
+        
+        return [mock_result]
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
