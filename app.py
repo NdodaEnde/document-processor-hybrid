@@ -24,7 +24,6 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import List, Dict, Optional, Union, Any, Tuple
-import queue
 from io import BytesIO
 
 # Pydantic imports for structured extraction
@@ -353,6 +352,402 @@ def process_document_bytes(file_bytes: bytes, filename: str, document_type: str,
             extracted_data = result.extraction.dict() if hasattr(result.extraction, 'dict') else result.extraction
             
             processing_time = time.time() - start_time
+            confidence_score = calculate_confidence_score(extracted_data)
+            
+            return {
+                "status": "success",
+                "filename": filename,
+                "extraction_method": "structured_pydantic",
+                "structured_data": extracted_data,
+                "raw_data": None,
+                "confidence_score": confidence_score,
+                "processing_time": processing_time,
+                "document_type": document_type,
+                "extraction_metadata": getattr(result, 'extraction_metadata', {}),
+                "extraction_error": None,
+                "file_size_mb": len(file_bytes) / (1024 * 1024)
+            }
+            
+        else:
+            # Fall back to OCR-only processing
+            print(f"[OCR] Using OCR-only processing for {filename}")
+            
+            if AGENTIC_DOC_AVAILABLE:
+                # Use bytes processing if available
+                results = parse_documents_func([file_bytes])
+            else:
+                # Mock processing for development
+                results = [create_mock_parsed_document(filename)]
+            
+            if not results or len(results) == 0:
+                raise Exception("No results from OCR processing")
+            
+            processing_time = time.time() - start_time
+            raw_data = serialize_parsed_document(results[0])
+            
+            return {
+                "status": "success",
+                "filename": filename,
+                "extraction_method": "ocr_only",
+                "structured_data": None,
+                "raw_data": raw_data,
+                "confidence_score": 0.5,  # Medium confidence for OCR-only
+                "processing_time": processing_time,
+                "document_type": document_type,
+                "extraction_error": None,
+                "file_size_mb": len(file_bytes) / (1024 * 1024)
+            }
+            
+    except Exception as e:
+        processing_time = time.time() - start_time
+        error_msg = f"Processing failed for {filename}: {str(e)}"
+        print(f"[ERROR] {error_msg}")
+        
+        return {
+            "status": "error",
+            "filename": filename,
+            "error": error_msg,
+            "processing_time": processing_time,
+            "document_type": document_type,
+            "file_size_mb": len(file_bytes) / (1024 * 1024) if file_bytes else 0
+        }
+
+def create_mock_parsed_document(filename: str):
+    """Create mock parsed document for development/testing"""
+    return type('MockParsedDocument', (), {
+        'markdown': f'Mock OCR content for {filename}\n\nEmployee Name: Mock Employee\nID Number: 1234567890123\nCompany: Mock Company',
+        'chunks': [
+            {
+                'type': 'text',
+                'content': f'Mock content from {filename}',
+                'page': 1,
+                'chunk_id': str(uuid.uuid4()),
+                'grounding': [],
+                'metadata': {}
+            }
+        ],
+        'errors': [],
+        'processing_time': 1.0
+    })()
+
+def serialize_parsed_document(parsed_doc) -> Dict[str, Any]:
+    """Convert ParsedDocument to JSON-serializable format"""
+    try:
+        return {
+            "markdown": getattr(parsed_doc, 'markdown', ''),
+            "chunks": serialize_chunks(getattr(parsed_doc, 'chunks', [])),
+            "errors": serialize_errors(getattr(parsed_doc, 'errors', [])),
+            "processing_time": getattr(parsed_doc, 'processing_time', 0)
+        }
+    except Exception as e:
+        print(f"[SERIALIZE] Error: {e}")
+        return {
+            "markdown": str(parsed_doc) if parsed_doc else '',
+            "chunks": [],
+            "errors": [{"message": f"Serialization error: {str(e)}", "page": 0}],
+            "processing_time": 0
+        }
+
+def serialize_chunks(chunks) -> List[Dict[str, Any]]:
+    """Serialize document chunks safely"""
+    if not chunks:
+        return []
+    
+    serialized = []
+    for chunk in chunks:
+        try:
+            serialized.append({
+                "type": getattr(chunk, 'type', 'unknown'),
+                "content": getattr(chunk, 'content', ''),
+                "page": getattr(chunk, 'page', 0),
+                "chunk_id": getattr(chunk, 'chunk_id', str(uuid.uuid4())),
+                "grounding": [],
+                "metadata": getattr(chunk, 'metadata', {})
+            })
+        except Exception as e:
+            print(f"[SERIALIZE] Chunk error: {e}")
+            serialized.append({
+                "type": "error",
+                "content": f"Chunk serialization error: {str(e)}",
+                "page": 0,
+                "chunk_id": str(uuid.uuid4()),
+                "grounding": [],
+                "metadata": {}
+            })
+    
+    return serialized
+
+def serialize_errors(errors) -> List[Dict[str, Any]]:
+    """Serialize processing errors safely"""
+    serialized = []
+    for error in errors:
+        try:
+            serialized.append({
+                "message": getattr(error, 'message', str(error)),
+                "page": getattr(error, 'page', 0),
+                "error_code": getattr(error, 'error_code', 'unknown')
+            })
+        except Exception as e:
+            serialized.append({
+                "message": str(error),
+                "page": 0,
+                "error_code": "serialization_error"
+            })
+    
+    return serialized
+
+# =============================================================================
+# BATCH PROCESSING ENGINE
+# =============================================================================
+
+def process_batch_concurrent(files_data: List[Tuple[bytes, str, str]], 
+                           document_types: List[str], 
+                           extraction_method: str, 
+                           batch_id: str) -> Dict[str, Any]:
+    """Concurrent batch processing with memory optimization"""
+    
+    print(f"[BATCH {batch_id}] Starting concurrent processing of {len(files_data)} files")
+    
+    # Initialize progress tracking
+    progress = BatchProgress(
+        batch_id=batch_id,
+        total_files=len(files_data),
+        processed_files=0,
+        failed_files=0,
+        status="processing",
+        start_time=time.time()
+    )
+    
+    batch_progress[batch_id] = progress
+    
+    # Process files concurrently with optimized thread pool
+    max_workers = min(3, len(files_data))  # Limit workers for memory efficiency
+    results = []
+    
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"Batch-{batch_id}") as executor:
+        # Submit all files for processing
+        future_to_index = {}
+        for i, (file_bytes, filename, original_filename) in enumerate(files_data):
+            document_type = document_types[i] if i < len(document_types) else 'certificate-fitness'
+            
+            future = executor.submit(
+                process_document_bytes,
+                file_bytes, filename, document_type, extraction_method, batch_id
+            )
+            future_to_index[future] = i
+        
+        # Collect results as they complete
+        for future in as_completed(future_to_index):
+            try:
+                result = future.result()
+                results.append(result)
+                
+                # Update progress
+                with processing_lock:
+                    if result["status"] == "success":
+                        progress.processed_files += 1
+                    else:
+                        progress.failed_files += 1
+                        progress.errors.append(result.get("error", "Unknown error"))
+                    
+                    progress.current_file = result["filename"]
+                    progress.update_memory_usage()
+                    
+                    # Force garbage collection periodically
+                    if (progress.processed_files + progress.failed_files) % 5 == 0:
+                        force_garbage_collection()
+                
+                print(f"[BATCH {batch_id}] Progress: {progress.processed_files + progress.failed_files}/{progress.total_files}")
+                
+            except Exception as e:
+                print(f"[BATCH {batch_id}] Future execution error: {e}")
+                results.append({
+                    "status": "error",
+                    "filename": "unknown",
+                    "error": f"Future execution error: {str(e)}",
+                    "processing_time": 0
+                })
+                
+                with processing_lock:
+                    progress.failed_files += 1
+                    progress.errors.append(str(e))
+    
+    # Finalize batch status
+    with processing_lock:
+        total_processed = progress.processed_files + progress.failed_files
+        if total_processed == progress.total_files:
+            progress.status = "completed" if progress.failed_files == 0 else "completed_with_errors"
+        else:
+            progress.status = "failed"
+        
+        progress.current_file = None
+        progress.update_memory_usage()
+    
+    # Separate successful and failed results
+    successful_results = [r for r in results if r["status"] == "success"]
+    failed_results = [{"filename": r["filename"], "error": r["error"]} for r in results if r["status"] == "error"]
+    
+    # Final garbage collection
+    force_garbage_collection()
+    
+    return {
+        "successful_results": successful_results,
+        "failed_results": failed_results,
+        "total_files": len(files_data),
+        "successful_count": len(successful_results),
+        "failed_count": len(failed_results),
+        "total_processing_time": time.time() - progress.start_time,
+        "extraction_method": extraction_method,
+        "batch_id": batch_id
+    }
+
+# =============================================================================
+# FLASK APPLICATION SETUP
+# =============================================================================
+
+app = Flask(__name__)
+CORS(app)
+
+# Configuration
+app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB max upload
+
+# Global storage
+processed_docs = {}
+batch_progress = {}
+processing_lock = threading.Lock()
+
+# =============================================================================
+# API ROUTES
+# =============================================================================
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Enhanced health check with comprehensive system info"""
+    log_memory_usage("Health check")
+    
+    with processing_lock:
+        active_batches = len(batch_progress)
+        processing_batches = len([p for p in batch_progress.values() if p.status == "processing"])
+    
+    # Memory statistics
+    process = psutil.Process(os.getpid())
+    memory_info = process.memory_info()
+    
+    return jsonify({
+        "status": "healthy",
+        "service": "medical-document-processor",
+        "version": "2.0.0",
+        "agentic_doc_version": sdk_version,
+        "agentic_doc_available": AGENTIC_DOC_AVAILABLE,
+        "structured_extraction_available": PARSE_FUNCTION_AVAILABLE,
+        "bytes_processing_enabled": True,
+        "active_batches": len(processed_docs),
+        "processing_batches": processing_batches,
+        "total_tracked_batches": active_batches,
+        "concurrent_processing": True,
+        "max_workers": 3,
+        "supported_document_types": [
+            "certificate-fitness", "medical-questionnaire", "test-results",
+            "audiogram", "spirometry", "x-ray-report", "lab-results"
+        ],
+        "extraction_methods": ["structured", "ocr"],
+        "system_info": {
+            "memory_rss_mb": memory_info.rss / 1024 / 1024,
+            "memory_vms_mb": memory_info.vms / 1024 / 1024,
+            "cpu_percent": process.cpu_percent()
+        },
+        "features": {
+            "no_temp_files": True,
+            "memory_optimized": True,
+            "real_time_progress": True,
+            "certificate_specific_extraction": True
+        }
+    })
+
+@app.route('/batch-status/<batch_id>', methods=['GET'])
+def get_batch_status(batch_id):
+    """Get real-time batch processing status with memory info"""
+    with processing_lock:
+        if batch_id not in batch_progress:
+            return jsonify({"error": "Batch ID not found"}), 404
+        
+        progress = batch_progress[batch_id]
+        progress.update_memory_usage()  # Update memory stats
+        return jsonify(progress.to_dict())
+
+@app.route('/process-documents', methods=['POST'])
+def process_documents():
+    """Enhanced document processing with direct bytes handling"""
+    log_memory_usage("START batch processing")
+    
+    if 'files' not in request.files:
+        return jsonify({"error": "No files provided"}), 400
+    
+    files = request.files.getlist('files')
+    if not files or all(file.filename == '' for file in files):
+        return jsonify({"error": "No files selected"}), 400
+    
+    # Extract parameters
+    extraction_method = request.form.get('extraction_method', 'structured')
+    document_types_json = request.form.get('document_types', '[]')
+    
+    try:
+        document_types = json.loads(document_types_json)
+    except:
+        document_types = []
+    
+    # Validate extraction method
+    if extraction_method not in ['structured', 'ocr']:
+        return jsonify({"error": "Invalid extraction_method. Use 'structured' or 'ocr'"}), 400
+    
+    # Fallback if structured extraction not available
+    if extraction_method == 'structured' and not PARSE_FUNCTION_AVAILABLE:
+        print(f"[WARNING] Structured extraction requested but not available. Using OCR.")
+        extraction_method = 'ocr'
+    
+    # Process files directly from bytes (no temp files!)
+    files_data = []
+    invalid_files = []
+    
+    for file in files:
+        if file and file.filename:
+            try:
+                # Read file bytes directly
+                file_bytes = file.read()
+                
+                # Validate file
+                is_valid, message = validate_file_bytes(file_bytes, file.filename)
+                if not is_valid:
+                    invalid_files.append({"filename": file.filename, "error": message})
+                    continue
+                
+                # Generate unique filename for processing
+                unique_filename = f"{uuid.uuid4()}_{file.filename}"
+                files_data.append((file_bytes, unique_filename, file.filename))
+                
+            except Exception as e:
+                invalid_files.append({"filename": file.filename, "error": f"File read error: {str(e)}"})
+    
+    if not files_data:
+        error_msg = "No valid files to process"
+        if invalid_files:
+            error_msg += f". Invalid files: {len(invalid_files)}"
+        return jsonify({"error": error_msg, "invalid_files": invalid_files}), 400
+    
+    log_memory_usage(f"AFTER processing {len(files_data)} files from bytes")
+    
+    # Generate batch ID and process
+    batch_id = str(uuid.uuid4())
+    
+    try:
+        start_time = time.time()
+        
+        # Process batch with bytes (no temp files!)
+        batch_result = process_batch_concurrent(
+            files_data, document_types, extraction_method, batch_id
+        )
+        
+        processing_time = time.time() - start_time
         log_memory_usage("AFTER batch processing")
         
         # Store results in memory
@@ -719,4 +1114,3 @@ if __name__ == '__main__':
     print("✨ Ready to process medical documents!")
     
     app.run(host='0.0.0.0', port=port, debug=False)
-          
