@@ -12,6 +12,22 @@ Features:
 - Certificate-specific field extraction
 """
 
+import os
+
+# =============================================================================
+# CRITICAL: MEMORY OPTIMIZATION - Set BEFORE any other imports
+# =============================================================================
+os.environ['BATCH_SIZE'] = '1'
+os.environ['MAX_WORKERS'] = '1'
+os.environ['MAX_RETRIES'] = '10'
+os.environ['MAX_RETRY_WAIT_TIME'] = '30'
+os.environ['PDF_TO_IMAGE_DPI'] = '72'
+os.environ['SPLIT_SIZE'] = '5'
+os.environ['EXTRACTION_SPLIT_SIZE'] = '25'
+os.environ['RETRY_LOGGING_STYLE'] = 'log_msg'
+
+print("🔧 [MEMORY] Environment variables set for low-memory processing")
+
 from flask import Flask, request, jsonify
 import os
 import uuid
@@ -504,9 +520,9 @@ def process_batch_concurrent(files_data: List[Tuple[bytes, str, str]],
                            document_types: List[str], 
                            extraction_method: str, 
                            batch_id: str) -> Dict[str, Any]:
-    """Concurrent batch processing with memory optimization"""
+    """MEMORY-OPTIMIZED sequential processing for Render's constraints"""
     
-    print(f"[BATCH {batch_id}] Starting concurrent processing of {len(files_data)} files")
+    print(f"[BATCH {batch_id}] Starting SEQUENTIAL processing of {len(files_data)} files (memory-optimized)")
     
     # Initialize progress tracking
     progress = BatchProgress(
@@ -520,57 +536,55 @@ def process_batch_concurrent(files_data: List[Tuple[bytes, str, str]],
     
     batch_progress[batch_id] = progress
     
-    # Process files concurrently with optimized thread pool
-    max_workers = min(3, len(files_data))  # Limit workers for memory efficiency
+    # CRITICAL: Process files SEQUENTIALLY to avoid memory overflow
     results = []
     
-    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix=f"Batch-{batch_id}") as executor:
-        # Submit all files for processing
-        future_to_index = {}
-        for i, (file_bytes, filename, original_filename) in enumerate(files_data):
+    for i, (file_bytes, filename, original_filename) in enumerate(files_data):
+        try:
             document_type = document_types[i] if i < len(document_types) else 'certificate-fitness'
             
-            future = executor.submit(
-                process_document_bytes,
+            print(f"[BATCH {batch_id}] Processing file {i+1}/{len(files_data)}: {filename}")
+            log_memory_usage(f"Before processing file {i+1}")
+            
+            # Update progress
+            with processing_lock:
+                progress.current_file = filename
+                progress.update_memory_usage()
+            
+            # Process single file
+            result = process_document_bytes(
                 file_bytes, filename, document_type, extraction_method, batch_id
             )
-            future_to_index[future] = i
-        
-        # Collect results as they complete
-        for future in as_completed(future_to_index):
-            try:
-                result = future.result()
-                results.append(result)
-                
-                # Update progress
-                with processing_lock:
-                    if result["status"] == "success":
-                        progress.processed_files += 1
-                    else:
-                        progress.failed_files += 1
-                        progress.errors.append(result.get("error", "Unknown error"))
-                    
-                    progress.current_file = result["filename"]
-                    progress.update_memory_usage()
-                    
-                    # Force garbage collection periodically
-                    if (progress.processed_files + progress.failed_files) % 5 == 0:
-                        force_garbage_collection()
-                
-                print(f"[BATCH {batch_id}] Progress: {progress.processed_files + progress.failed_files}/{progress.total_files}")
-                
-            except Exception as e:
-                print(f"[BATCH {batch_id}] Future execution error: {e}")
-                results.append({
-                    "status": "error",
-                    "filename": "unknown",
-                    "error": f"Future execution error: {str(e)}",
-                    "processing_time": 0
-                })
-                
-                with processing_lock:
+            results.append(result)
+            
+            # Update progress immediately
+            with processing_lock:
+                if result["status"] == "success":
+                    progress.processed_files += 1
+                else:
                     progress.failed_files += 1
-                    progress.errors.append(str(e))
+                    progress.errors.append(result.get("error", "Unknown error"))
+                
+                progress.update_memory_usage()
+            
+            # CRITICAL: Force cleanup after each file
+            force_garbage_collection()
+            log_memory_usage(f"After processing file {i+1}")
+            
+            print(f"[BATCH {batch_id}] ✅ Completed {i+1}/{len(files_data)}")
+            
+        except Exception as e:
+            print(f"[BATCH {batch_id}] ❌ Error processing {filename}: {e}")
+            results.append({
+                "status": "error",
+                "filename": filename,
+                "error": str(e),
+                "processing_time": 0
+            })
+            
+            with processing_lock:
+                progress.failed_files += 1
+                progress.errors.append(str(e))
     
     # Finalize batch status
     with processing_lock:
