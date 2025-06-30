@@ -79,52 +79,52 @@ class BatchProgress:
 # =============================================================================
 
 class EmployeeInfo(BaseModel):
-    """Employee information from medical documents"""
-    full_name: str = Field(description="Complete employee name including initials and surname")
-    company_name: str = Field(description="Name of the employing company or organization")
-    id_number: str = Field(description="South African ID number (13 digits)")
-    job_title: str = Field(description="Employee's job title or position")
+    """Employee information extracted from certificate fields"""
+    full_name: str = Field(description="Employee name from 'Initials & Surname:' field on the certificate")
+    company_name: str = Field(description="Company name from 'Company Name:' field on the certificate")
+    id_number: str = Field(description="13-digit South African ID number from 'ID NO:' field on the certificate")
+    job_title: str = Field(description="Job position from 'Job Title:' field on the certificate")
 
 class MedicalTest(BaseModel):
-    """Individual medical test result"""
-    performed: bool = Field(description="Whether the test was actually performed (true/false)")
-    result: str = Field(description="The actual test result or outcome")
+    """Individual medical test result from the test table"""
+    performed: bool = Field(description="Whether the test was performed - look for checkmarks in 'Done' column")
+    result: str = Field(description="Test result from 'Results' column in the medical examination table")
 
 class MedicalTests(BaseModel):
-    """All medical tests performed during examination"""
-    blood_test: Optional[MedicalTest] = Field(description="Blood test results")
-    vision_test: Optional[MedicalTest] = Field(description="Vision/eyesight test results including near/far vision")
-    hearing_test: Optional[MedicalTest] = Field(description="Hearing or audiometry test results")
-    lung_function: Optional[MedicalTest] = Field(description="Lung function or spirometry test results")
-    x_ray: Optional[MedicalTest] = Field(description="Chest X-ray examination results")
-    drug_screen: Optional[MedicalTest] = Field(description="Drug screening or substance abuse test results")
-    depth_test: Optional[MedicalTest] = Field(description="Depth perception and side vision test")
-    night_vision: Optional[MedicalTest] = Field(description="Night vision test results")
-    heights_test: Optional[MedicalTest] = Field(description="Working at heights fitness assessment")
+    """All medical tests from the 'MEDICAL EXAMINATION CONDUCTED INCLUDES THE FOLLOWING TESTS' table"""
+    blood_test: Optional[MedicalTest] = Field(description="BLOODS test from the examination table")
+    vision_test: Optional[MedicalTest] = Field(description="FAR, NEAR VISION test from the examination table")
+    hearing_test: Optional[MedicalTest] = Field(description="Hearing test from the examination table")
+    lung_function: Optional[MedicalTest] = Field(description="Lung Function test from the examination table")
+    x_ray: Optional[MedicalTest] = Field(description="X-Ray test from the examination table")
+    drug_screen: Optional[MedicalTest] = Field(description="Drug Screen test from the examination table")
+    side_depth_test: Optional[MedicalTest] = Field(description="SIDE & DEPTH vision test from the examination table")
+    night_vision: Optional[MedicalTest] = Field(description="NIGHT VISION test from the examination table")
+    heights_test: Optional[MedicalTest] = Field(description="Working at Heights test from the examination table")
 
 class MedicalExamination(BaseModel):
-    """Medical examination details and results"""
-    examination_date: str = Field(description="Date when the medical examination was conducted (DD-MM-YYYY format)")
-    expiry_date: str = Field(description="Date when the medical certificate expires (DD-MM-YYYY format)")
-    examination_type: str = Field(description="Type of examination: PRE-EMPLOYMENT, PERIODICAL, or EXIT")
-    fitness_status: str = Field(description="Overall fitness declaration: FIT, FIT_WITH_RESTRICTIONS, FIT_WITH_CONDITIONS, TEMPORARILY_UNFIT, or UNFIT")
-    restrictions: List[str] = Field(description="List of any medical restrictions or limitations identified")
-    comments: Optional[str] = Field(description="Additional comments or notes from the examining physician")
+    """Medical examination details from certificate form fields"""
+    examination_date: str = Field(description="Date from 'Date of Examination:' field in DD.MM.YYYY format (e.g., 04.10.2004)")
+    expiry_date: str = Field(description="Date from 'Expiry Date:' field in DD.MM.YYYY format (e.g., 04.10.2005)")
+    examination_type: str = Field(description="Checked box from PRE-EMPLOYMENT, PERIODICAL, or EXIT examination type checkboxes")
+    fitness_status: str = Field(description="Selected option from 'Medical Fitness Declaration' section: FIT, Fit with Restriction, Fit with Condition, Temporary Unfit, or UNFIT")
+    restrictions: List[str] = Field(description="Any restrictions listed in the 'Restrictions:' section of the certificate")
+    comments: Optional[str] = Field(description="Text from 'Comments:' field on the certificate")
 
 class MedicalPractitioner(BaseModel):
-    """Medical practitioner who conducted the examination"""
-    doctor_name: str = Field(description="Name of the examining doctor or medical practitioner")
-    practice_number: str = Field(description="Medical practice registration number")
-    signature_present: bool = Field(description="Whether a signature is present in the document")
-    stamp_present: bool = Field(description="Whether an official medical stamp is present")
+    """Medical practitioner information from certificate header and signature area"""
+    doctor_name: str = Field(description="Doctor name from certificate header (e.g., 'Dr. MJ Mputhi') or signature area")
+    practice_number: str = Field(description="Practice number from certificate header (e.g., 'Practice No: 0404160')")
+    signature_present: bool = Field(description="Whether a doctor's signature is present in the signature area")
+    stamp_present: bool = Field(description="Whether an official medical practice stamp is visible on the certificate")
 
 class CertificateOfFitness(BaseModel):
-    """Complete Certificate of Fitness document structure"""
-    document_classification: str = Field(description="Document type classification")
-    employee_info: EmployeeInfo = Field(description="Employee personal and employment information")
-    medical_examination: MedicalExamination = Field(description="Medical examination details and results")
-    medical_tests: MedicalTests = Field(description="All medical tests performed and their results")
-    medical_practitioner: MedicalPractitioner = Field(description="Information about the examining medical practitioner")
+    """Complete Certificate of Fitness document matching the exact certificate format"""
+    document_classification: str = Field(description="Document type - should be 'certificate_of_fitness'")
+    employee_info: EmployeeInfo = Field(description="Employee personal and employment information from the top section of the certificate")
+    medical_examination: MedicalExamination = Field(description="Medical examination details and results from the certificate form fields")
+    medical_tests: MedicalTests = Field(description="All medical tests performed and their results from the examination table")
+    medical_practitioner: MedicalPractitioner = Field(description="Information about the examining medical practitioner from header and signature areas")
 
 class MedicalQuestionnaire(BaseModel):
     """Medical questionnaire or health assessment form"""
@@ -479,16 +479,17 @@ def process_single_file_enhanced(file_path: str, batch_id: str, document_type: s
         }
 
 def process_with_structured_extraction(file_path: str, document_type: str) -> Dict:
-    """Process file using agentic-doc with Pydantic model extraction"""
+    """Process file using agentic-doc with certificate-specific Pydantic models"""
     try:
         print(f"[STRUCTURED] Processing {file_path} as {document_type}")
         
-        # Get the appropriate Pydantic model
+        # Get the appropriate Pydantic model with certificate-specific descriptions
         extraction_model = get_extraction_model(document_type)
         print(f"[STRUCTURED] Using model: {extraction_model.__name__}")
         
-        # Check if parse function is available (for newer versions)
+        # Check if parse function is available (for newer versions with Pydantic support)
         if PARSE_FUNCTION_AVAILABLE:
+            print(f"[STRUCTURED] Using agentic-doc parse() with Pydantic model extraction")
             # Use agentic-doc parse with extraction model
             results = parse(file_path, extraction_model=extraction_model)
             
@@ -505,7 +506,7 @@ def process_with_structured_extraction(file_path: str, document_type: str) -> Di
             # Calculate confidence
             confidence_score = calculate_confidence_score(extracted_data)
             
-            print(f"[STRUCTURED] Extraction completed. Confidence: {confidence_score:.3f}")
+            print(f"[STRUCTURED] Pydantic extraction completed. Confidence: {confidence_score:.3f}")
             
             return {
                 "extraction_method": "structured_pydantic",
@@ -516,31 +517,27 @@ def process_with_structured_extraction(file_path: str, document_type: str) -> Di
                 "extraction_error": str(extraction_error) if extraction_error else None
             }
         else:
-            # Fall back to OCR processing with parse_documents
-            print(f"[STRUCTURED] Parse function not available, using parse_documents with OCR processing")
+            # Fall back to OCR processing only (no regex patterns)
+            print(f"[STRUCTURED] Parse function not available, using OCR-only processing")
             
             ocr_result = parse_documents([file_path])
             if ocr_result and len(ocr_result) > 0:
-                # Extract text and try to structure it manually
                 raw_data = serialize_parsed_document(ocr_result[0])
                 
-                # Create mock structured data based on document type
-                structured_data = create_structured_data_from_ocr(raw_data, document_type, extraction_model)
-                
                 return {
-                    "extraction_method": "ocr_with_structuring",
-                    "structured_data": structured_data,
+                    "extraction_method": "ocr_only",
+                    "structured_data": None,
                     "raw_data": raw_data,
-                    "confidence_score": 0.7,  # Medium confidence for OCR + structuring
-                    "extraction_error": None
+                    "confidence_score": 0.5,  # Medium confidence for OCR-only
+                    "extraction_error": "Pydantic extraction not available - OCR only"
                 }
             else:
                 raise Exception("No OCR results returned")
         
     except Exception as e:
         print(f"[STRUCTURED] Error: {e}")
-        # Fallback to OCR processing
-        print(f"[STRUCTURED] Falling back to OCR processing for {file_path}")
+        # Fallback to pure OCR processing
+        print(f"[STRUCTURED] Falling back to pure OCR processing for {file_path}")
         
         try:
             ocr_result = parse_documents([file_path])
@@ -555,88 +552,81 @@ def process_with_structured_extraction(file_path: str, document_type: str) -> Di
         except Exception as ocr_error:
             raise Exception(f"Both structured extraction and OCR fallback failed: {str(e)}, {str(ocr_error)}")
 
-def create_structured_data_from_ocr(raw_data: Dict, document_type: str, model_class) -> Dict:
-    """Create structured data from OCR text using pattern matching"""
-    print(f"[STRUCTURING] Creating structured data from OCR for {document_type}")
+@app.route('/debug-extraction', methods=['POST'])
+def debug_extraction():
+    """DEBUG: Show raw OCR text for debugging - NO REGEX PATTERNS"""
+    if 'files' not in request.files:
+        return jsonify({"error": "No files provided"}), 400
     
-    markdown_text = raw_data.get('markdown', '')
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({"error": "No files selected"}), 400
     
-    if 'Certificate' in model_class.__name__:
-        # Extract certificate data from OCR text
-        structured_data = {
-            "employee_info": extract_employee_from_text(markdown_text),
-            "medical_examination": extract_examination_from_text(markdown_text),
-            "medical_tests": extract_tests_from_text(markdown_text),
-            "medical_practitioner": extract_practitioner_from_text(markdown_text)
-        }
-    elif 'Questionnaire' in model_class.__name__:
-        structured_data = {
-            "patient_info": extract_employee_from_text(markdown_text),
-            "medical_history": {"conditions": []},
-            "symptoms": [],
-            "medications": [],
-            "allergies": []
-        }
-    else:
-        structured_data = {
-            "patient_info": extract_employee_from_text(markdown_text),
-            "test_results": {"result": "See raw data"},
-            "test_date": "Unknown",
-            "reference_ranges": {}
-        }
+    file = files[0]  # Just process first file for debugging
+    filename = secure_filename(file.filename)
+    temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{uuid.uuid4()}_{filename}")
+    file.save(temp_path)
     
-    return structured_data
-
-def extract_employee_from_text(text: str) -> Dict:
-    """Extract employee info from OCR text using regex patterns"""
-    import re
+    try:
+        print(f"[DEBUG] Processing {filename} for debugging")
+        
+        # Get raw OCR only
+        ocr_result = parse_documents([temp_path])
+        if ocr_result and len(ocr_result) > 0:
+            raw_data = serialize_parsed_document(ocr_result[0])
+            markdown_text = raw_data.get('markdown', '')
+            
+            print(f"[DEBUG] Raw markdown length: {len(markdown_text)}")
+            print(f"[DEBUG] Raw markdown content: {markdown_text}")
+            
+            return jsonify({
+                "filename": filename,
+                "raw_markdown": markdown_text,
+                "raw_markdown_length": len(markdown_text),
+                "chunks_count": len(raw_data.get('chunks', [])),
+                "chunks": raw_data.get('chunks', []),
+                "processing_method": "OCR only - no regex patterns used",
+                "note": "This shows pure OCR output. Structured extraction uses Pydantic models with agentic-doc."
+            })
+        else:
+            return jsonify({"error": "No OCR results"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     
-    # Simple pattern matching for common fields
-    name_match = re.search(r'Name[:\s]+([A-Z\s\.]+)', text, re.IGNORECASE)
-    id_match = re.search(r'ID\s*(?:No|Number)[:\s]*(\d{13})', text, re.IGNORECASE)
-    company_match = re.search(r'Company[:\s]+([A-Z\s&]+)', text, re.IGNORECASE)
+    finally:
+        # Cleanup
+        try:
+            os.remove(temp_path)
+        except:
+            passr'MP\s*(?:No|Number)[:\s]*(\d{6,8})',
+    ]
     
-    return {
-        "full_name": name_match.group(1).strip() if name_match else "Not found",
-        "id_number": id_match.group(1) if id_match else "Not found",
-        "company_name": company_match.group(1).strip() if company_match else "Not found",
-        "job_title": "Not specified"
-    }
-
-def extract_examination_from_text(text: str) -> Dict:
-    """Extract examination info from OCR text"""
-    import re
+    # Extract doctor name
+    doctor_name = "Not found"
+    for pattern in doctor_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            doctor_name = match.group(1).strip()
+            # Clean up common issues
+            doctor_name = re.sub(r'\s+', ' ', doctor_name)
+            print(f"[EXTRACTION] Found doctor: {doctor_name}")
+            break
     
-    date_match = re.search(r'Date[:\s]+(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})', text, re.IGNORECASE)
-    
-    return {
-        "examination_date": date_match.group(1) if date_match else "Not found",
-        "examination_type": "PERIODICAL",  # Default
-        "fitness_status": "FIT" if "FIT" in text.upper() else "Unknown",
-        "restrictions": [],
-        "expiry_date": "Not found"
-    }
-
-def extract_tests_from_text(text: str) -> Dict:
-    """Extract test results from OCR text"""
-    return {
-        "vision_test": {"performed": "vision" in text.lower(), "result": "See document"},
-        "hearing_test": {"performed": "hearing" in text.lower(), "result": "See document"},
-        "lung_function": {"performed": "lung" in text.lower(), "result": "See document"},
-        "x_ray": {"performed": "x-ray" in text.lower() or "xray" in text.lower(), "result": "See document"}
-    }
-
-def extract_practitioner_from_text(text: str) -> Dict:
-    """Extract practitioner info from OCR text"""
-    import re
-    
-    doctor_match = re.search(r'Dr\.?\s*([A-Z\s\.]+)', text, re.IGNORECASE)
+    # Extract practice number
+    practice_number = "Not found"
+    for pattern in practice_patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            practice_number = match.group(1)
+            print(f"[EXTRACTION] Found practice number: {practice_number}")
+            break
     
     return {
-        "doctor_name": doctor_match.group(1).strip() if doctor_match else "Not found",
-        "practice_number": "Not found",
-        "signature_present": "signature" in text.lower(),
-        "stamp_present": "stamp" in text.lower()
+        "doctor_name": doctor_name,
+        "practice_number": practice_number,
+        "signature_present": bool(re.search(r'signature|Dr\s*[A-Z].*?Occupational', text, re.IGNORECASE)),
+        "stamp_present": bool(re.search(r'stamp|Practice\s*No', text, re.IGNORECASE))
     }
 
 def process_batch_concurrent_enhanced(saved_files: List[str], batch_id: str, document_types: List[str],
@@ -1439,7 +1429,58 @@ def memory_status():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/batch-stats', methods=['GET'])
+@app.route('/debug-extraction', methods=['POST'])
+def debug_extraction():
+    """DEBUG: Show raw OCR text and extraction results for debugging"""
+    if 'files' not in request.files:
+        return jsonify({"error": "No files provided"}), 400
+    
+    files = request.files.getlist('files')
+    if not files:
+        return jsonify({"error": "No files selected"}), 400
+    
+    file = files[0]  # Just process first file for debugging
+    filename = secure_filename(file.filename)
+    temp_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{uuid.uuid4()}_{filename}")
+    file.save(temp_path)
+    
+    try:
+        print(f"[DEBUG] Processing {filename} for debugging")
+        
+        # Get raw OCR
+        ocr_result = parse_documents([temp_path])
+        if ocr_result and len(ocr_result) > 0:
+            raw_data = serialize_parsed_document(ocr_result[0])
+            markdown_text = raw_data.get('markdown', '')
+            
+            print(f"[DEBUG] Raw markdown length: {len(markdown_text)}")
+            print(f"[DEBUG] Raw markdown content: {markdown_text}")
+            
+            # Get structured extraction
+            document_type = request.form.get('document_type', 'certificate-fitness')
+            extraction_model = get_extraction_model(document_type)
+            structured_data = create_structured_data_from_ocr(raw_data, document_type, extraction_model)
+            
+            return jsonify({
+                "filename": filename,
+                "raw_markdown": markdown_text,
+                "raw_markdown_length": len(markdown_text),
+                "chunks_count": len(raw_data.get('chunks', [])),
+                "structured_extraction": structured_data,
+                "document_type": document_type
+            })
+        else:
+            return jsonify({"error": "No OCR results"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+    finally:
+        # Cleanup
+        try:
+            os.remove(temp_path)
+        except:
+            pass
 def batch_stats():
     """Get comprehensive batch processing statistics with extraction method breakdown"""
     try:
