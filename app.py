@@ -252,10 +252,14 @@ def check_agentic_doc_version():
 agentic_doc_version = check_agentic_doc_version()
 
 try:
+    print("[DEBUG] Attempting to import agentic_doc...")
     from agentic_doc.parse import parse_documents, parse
+    print("[SUCCESS] agentic-doc imported successfully!")
     print("Using real agentic_doc SDK with structured extraction support")
     AGENTIC_DOC_AVAILABLE = True
-except ImportError:
+except ImportError as e:
+    print(f"[ERROR] Failed to import agentic_doc: {e}")
+    print(f"[ERROR] Import error type: {type(e)}")
     print("agentic-doc not available. Creating mock functions.")
     AGENTIC_DOC_AVAILABLE = False
     
