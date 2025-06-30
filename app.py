@@ -253,8 +253,18 @@ agentic_doc_version = check_agentic_doc_version()
 
 try:
     print("[DEBUG] Attempting to import agentic_doc...")
-    from agentic_doc.parse import parse_documents, parse
-    print("[SUCCESS] agentic-doc imported successfully!")
+    from agentic_doc.parse import parse_documents
+    print("[SUCCESS] agentic-doc parse_documents imported successfully!")
+    
+    # Try to import parse function (might not exist in all versions)
+    try:
+        from agentic_doc.parse import parse
+        print("[SUCCESS] agentic-doc parse function also available!")
+        PARSE_FUNCTION_AVAILABLE = True
+    except ImportError:
+        print("[INFO] agentic-doc parse function not available in this version")
+        PARSE_FUNCTION_AVAILABLE = False
+    
     print("Using real agentic_doc SDK with structured extraction support")
     AGENTIC_DOC_AVAILABLE = True
 except ImportError as e:
@@ -262,6 +272,7 @@ except ImportError as e:
     print(f"[ERROR] Import error type: {type(e)}")
     print("agentic-doc not available. Creating mock functions.")
     AGENTIC_DOC_AVAILABLE = False
+    PARSE_FUNCTION_AVAILABLE = False
     
     # Create mock functions when agentic-doc is not available
     def parse_documents(file_paths, **kwargs):
@@ -476,32 +487,55 @@ def process_with_structured_extraction(file_path: str, document_type: str) -> Di
         extraction_model = get_extraction_model(document_type)
         print(f"[STRUCTURED] Using model: {extraction_model.__name__}")
         
-        # Use agentic-doc parse with extraction model
-        results = parse(file_path, extraction_model=extraction_model)
-        
-        if not results or len(results) == 0:
-            raise Exception("No results returned from structured extraction")
-        
-        result = results[0]
-        
-        # Extract structured data
-        extracted_data = result.extraction.dict() if hasattr(result.extraction, 'dict') else result.extraction
-        extraction_metadata = getattr(result, 'extraction_metadata', {})
-        extraction_error = getattr(result, 'extraction_error', None)
-        
-        # Calculate confidence
-        confidence_score = calculate_confidence_score(extracted_data)
-        
-        print(f"[STRUCTURED] Extraction completed. Confidence: {confidence_score:.3f}")
-        
-        return {
-            "extraction_method": "structured_pydantic",
-            "structured_data": extracted_data,
-            "raw_data": None,  # Could add OCR fallback here if needed
-            "confidence_score": confidence_score,
-            "extraction_metadata": extraction_metadata,
-            "extraction_error": str(extraction_error) if extraction_error else None
-        }
+        # Check if parse function is available (for newer versions)
+        if PARSE_FUNCTION_AVAILABLE:
+            # Use agentic-doc parse with extraction model
+            results = parse(file_path, extraction_model=extraction_model)
+            
+            if not results or len(results) == 0:
+                raise Exception("No results returned from structured extraction")
+            
+            result = results[0]
+            
+            # Extract structured data
+            extracted_data = result.extraction.dict() if hasattr(result.extraction, 'dict') else result.extraction
+            extraction_metadata = getattr(result, 'extraction_metadata', {})
+            extraction_error = getattr(result, 'extraction_error', None)
+            
+            # Calculate confidence
+            confidence_score = calculate_confidence_score(extracted_data)
+            
+            print(f"[STRUCTURED] Extraction completed. Confidence: {confidence_score:.3f}")
+            
+            return {
+                "extraction_method": "structured_pydantic",
+                "structured_data": extracted_data,
+                "raw_data": None,
+                "confidence_score": confidence_score,
+                "extraction_metadata": extraction_metadata,
+                "extraction_error": str(extraction_error) if extraction_error else None
+            }
+        else:
+            # Fall back to OCR processing with parse_documents
+            print(f"[STRUCTURED] Parse function not available, using parse_documents with OCR processing")
+            
+            ocr_result = parse_documents([file_path])
+            if ocr_result and len(ocr_result) > 0:
+                # Extract text and try to structure it manually
+                raw_data = serialize_parsed_document(ocr_result[0])
+                
+                # Create mock structured data based on document type
+                structured_data = create_structured_data_from_ocr(raw_data, document_type, extraction_model)
+                
+                return {
+                    "extraction_method": "ocr_with_structuring",
+                    "structured_data": structured_data,
+                    "raw_data": raw_data,
+                    "confidence_score": 0.7,  # Medium confidence for OCR + structuring
+                    "extraction_error": None
+                }
+            else:
+                raise Exception("No OCR results returned")
         
     except Exception as e:
         print(f"[STRUCTURED] Error: {e}")
@@ -520,6 +554,90 @@ def process_with_structured_extraction(file_path: str, document_type: str) -> Di
                 }
         except Exception as ocr_error:
             raise Exception(f"Both structured extraction and OCR fallback failed: {str(e)}, {str(ocr_error)}")
+
+def create_structured_data_from_ocr(raw_data: Dict, document_type: str, model_class) -> Dict:
+    """Create structured data from OCR text using pattern matching"""
+    print(f"[STRUCTURING] Creating structured data from OCR for {document_type}")
+    
+    markdown_text = raw_data.get('markdown', '')
+    
+    if 'Certificate' in model_class.__name__:
+        # Extract certificate data from OCR text
+        structured_data = {
+            "employee_info": extract_employee_from_text(markdown_text),
+            "medical_examination": extract_examination_from_text(markdown_text),
+            "medical_tests": extract_tests_from_text(markdown_text),
+            "medical_practitioner": extract_practitioner_from_text(markdown_text)
+        }
+    elif 'Questionnaire' in model_class.__name__:
+        structured_data = {
+            "patient_info": extract_employee_from_text(markdown_text),
+            "medical_history": {"conditions": []},
+            "symptoms": [],
+            "medications": [],
+            "allergies": []
+        }
+    else:
+        structured_data = {
+            "patient_info": extract_employee_from_text(markdown_text),
+            "test_results": {"result": "See raw data"},
+            "test_date": "Unknown",
+            "reference_ranges": {}
+        }
+    
+    return structured_data
+
+def extract_employee_from_text(text: str) -> Dict:
+    """Extract employee info from OCR text using regex patterns"""
+    import re
+    
+    # Simple pattern matching for common fields
+    name_match = re.search(r'Name[:\s]+([A-Z\s\.]+)', text, re.IGNORECASE)
+    id_match = re.search(r'ID\s*(?:No|Number)[:\s]*(\d{13})', text, re.IGNORECASE)
+    company_match = re.search(r'Company[:\s]+([A-Z\s&]+)', text, re.IGNORECASE)
+    
+    return {
+        "full_name": name_match.group(1).strip() if name_match else "Not found",
+        "id_number": id_match.group(1) if id_match else "Not found",
+        "company_name": company_match.group(1).strip() if company_match else "Not found",
+        "job_title": "Not specified"
+    }
+
+def extract_examination_from_text(text: str) -> Dict:
+    """Extract examination info from OCR text"""
+    import re
+    
+    date_match = re.search(r'Date[:\s]+(\d{1,2}[-/]\d{1,2}[-/]\d{2,4})', text, re.IGNORECASE)
+    
+    return {
+        "examination_date": date_match.group(1) if date_match else "Not found",
+        "examination_type": "PERIODICAL",  # Default
+        "fitness_status": "FIT" if "FIT" in text.upper() else "Unknown",
+        "restrictions": [],
+        "expiry_date": "Not found"
+    }
+
+def extract_tests_from_text(text: str) -> Dict:
+    """Extract test results from OCR text"""
+    return {
+        "vision_test": {"performed": "vision" in text.lower(), "result": "See document"},
+        "hearing_test": {"performed": "hearing" in text.lower(), "result": "See document"},
+        "lung_function": {"performed": "lung" in text.lower(), "result": "See document"},
+        "x_ray": {"performed": "x-ray" in text.lower() or "xray" in text.lower(), "result": "See document"}
+    }
+
+def extract_practitioner_from_text(text: str) -> Dict:
+    """Extract practitioner info from OCR text"""
+    import re
+    
+    doctor_match = re.search(r'Dr\.?\s*([A-Z\s\.]+)', text, re.IGNORECASE)
+    
+    return {
+        "doctor_name": doctor_match.group(1).strip() if doctor_match else "Not found",
+        "practice_number": "Not found",
+        "signature_present": "signature" in text.lower(),
+        "stamp_present": "stamp" in text.lower()
+    }
 
 def process_batch_concurrent_enhanced(saved_files: List[str], batch_id: str, document_types: List[str],
                                     extraction_method: str, include_marginalia: bool,
