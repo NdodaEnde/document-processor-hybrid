@@ -72,6 +72,24 @@ class MedicalTests(BaseModel):
     vision_test: Optional[MedicalTest] = Field(description="Vision test from examination table")
     hearing_test: Optional[MedicalTest] = Field(description="Hearing test from examination table")
     blood_test: Optional[MedicalTest] = Field(description="Blood test from examination table")
+    lung_function: Optional[MedicalTest] = Field(description="Spirometry/lung function test")
+    x_ray: Optional[MedicalTest] = Field(description="Chest X-ray test")
+    drug_screen: Optional[MedicalTest] = Field(description="Drug/substance screening test")
+    side_depth_test: Optional[MedicalTest] = Field(description="SIDE & DEPTH vision test")
+    night_vision: Optional[MedicalTest] = Field(description="NIGHT VISION test")
+    heights_test: Optional[MedicalTest] = Field(description="Working at Heights test")
+
+class WorkRestrictions(BaseModel):
+    """Work restrictions from the restrictions table"""
+    heights: bool = Field(description="Heights restriction applies")
+    confined_spaces: bool = Field(description="Confined Spaces restriction applies") 
+    dust_exposure: bool = Field(description="Dust Exposure restriction applies")
+    chemical_exposure: bool = Field(description="Chemical Exposure restriction applies")
+    motorized_equipment: bool = Field(description="Motorized Equipment restriction applies")
+    wear_spectacles: bool = Field(description="Wear Spectacles restriction applies")
+    wear_hearing_protection: bool = Field(description="Wear Hearing Protection restriction applies")
+    chronic_conditions: bool = Field(description="Remain on Treatment for Chronic Conditions restriction applies")
+
 
 class MedicalExamination(BaseModel):
     """Medical examination details"""
@@ -79,7 +97,12 @@ class MedicalExamination(BaseModel):
     expiry_date: str = Field(description="Certificate expiry date")
     examination_type: str = Field(description="PRE-EMPLOYMENT, PERIODICAL, or EXIT")
     fitness_status: str = Field(description="FIT, UNFIT, etc.")
-    restrictions: List[str] = Field(description="Work restrictions")
+    work_restrictions: WorkRestrictions = Field(description="All work restrictions from the blue restrictions table")
+    restrictions_list: List[str] = Field(description="List of applicable restriction names")
+    comments: Optional[str] = Field(description="Additional medical comments or notes")
+    review_date: Optional[str] = Field(description="Next review date if applicable")
+    follow_up_actions: Optional[str] = Field(description="Referred or follow up actions required")
+    
 
 class CertificateOfFitness(BaseModel):
     """Complete Certificate of Fitness"""
