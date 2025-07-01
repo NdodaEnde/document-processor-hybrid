@@ -104,12 +104,20 @@ class MedicalExamination(BaseModel):
     follow_up_actions: Optional[str] = Field(description="Referred or follow up actions required")
     
 
+class MedicalPractitioner(BaseModel):
+    """Medical practitioner information from certificate"""
+    doctor_name: str = Field(description="Examining doctor's name from signature area or header (e.g., 'Dr MJ Mphuthi')")
+    practice_number: str = Field(description="Medical practice registration number (e.g., '0404160')")
+    signature_present: bool = Field(description="Whether doctor's signature is visible on the certificate")
+    stamp_present: bool = Field(description="Whether official medical practice stamp is present on the certificate")
+
 class CertificateOfFitness(BaseModel):
     """Complete Certificate of Fitness"""
     document_classification: str = Field(description="Document type")
     employee_info: EmployeeInfo = Field(description="Employee details")
     medical_examination: MedicalExamination = Field(description="Medical exam results")
     medical_tests: MedicalTests = Field(description="Test results")
+    medical_practitioner: MedicalPractitioner = Field(description="Doctor and practice information")  
 
 def get_extraction_model(document_type: str):
     """Get appropriate Pydantic model for document type"""
