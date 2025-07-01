@@ -395,7 +395,7 @@ def process_batch_concurrent(saved_files: List[str], batch_id: str, include_marg
     # Submit all files for processing
     for file_path in saved_files:
         document_type = 'certificate-fitness'  # Default type, can be made dynamic later
-        extraction_method = 'ocr'  # Start with OCR for stability, can be changed to 'structured'
+        extraction_method = 'structured'   # Start with OCR for stability, can be changed to 'structured'
 
         future = executor.submit(
             process_single_file,
