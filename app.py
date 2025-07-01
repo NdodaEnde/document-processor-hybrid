@@ -197,20 +197,13 @@ class BatchProgress:
         }
 
 def log_memory_usage(context=""):
-    """Log current memory usage and top consumers"""
+    """Simple memory logging without timeout risk"""
     try:
         process = psutil.Process(os.getpid())
         memory_info = process.memory_info()
         memory_mb = memory_info.rss / 1024 / 1024
         print(f"[MEMORY] {context}: {memory_mb:.2f} MB RSS, {memory_info.vms / 1024 / 1024:.2f} MB VMS")
-        
-        # Get top memory consumers (reduced to 2 to avoid log spam)
-        snapshot = tracemalloc.take_snapshot()
-        top_stats = snapshot.statistics('lineno')
-        print(f"[MEMORY] Top 2 memory consumers:")
-        for index, stat in enumerate(top_stats[:2], 1):
-            print(f"  {index}. {stat}")
-            
+        # Remove the expensive tracemalloc snapshot that's causing timeouts
     except Exception as e:
         print(f"[MEMORY] Error getting memory info: {e}")
 
