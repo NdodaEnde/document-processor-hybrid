@@ -11,8 +11,25 @@ Features:
 - Real-time progress tracking
 - Certificate-specific field extraction
 """
-from flask import Flask, request, jsonify, send_from_directory
 import os
+# MEMORY-OPTIMIZED SDK Configuration for Render
+os.environ.setdefault('BATCH_SIZE', '1')        # Process 1 file at a time for memory
+os.environ.setdefault('MAX_WORKERS', '1')       # 1 worker thread for memory
+os.environ.setdefault('MAX_RETRIES', '10')      # Reduced retries
+os.environ.setdefault('MAX_RETRY_WAIT_TIME', '30')  # Keep this
+os.environ.setdefault('PDF_TO_IMAGE_DPI', '72') # Lower DPI for memory
+os.environ.setdefault('SPLIT_SIZE', '5')        # Smaller chunks
+os.environ.setdefault('EXTRACTION_SPLIT_SIZE', '25')  # Smaller extraction chunks
+os.environ.setdefault('RETRY_LOGGING_STYLE', 'log_msg')
+
+print("🔧 [MEMORY] Memory-optimized settings applied for agentic-doc")
+
+# =============================================================================
+# CRITICAL: MEMORY OPTIMIZATION - Set BEFORE any other imports
+# =============================================================================
+
+
+from flask import Flask, request, jsonify, send_from_directory
 import tempfile
 import uuid
 import json
@@ -229,18 +246,6 @@ UPLOAD_FOLDER = os.path.join(tempfile.gettempdir(), 'doc_processor_uploads')
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 100 * 1024 * 1024  # 100MB for batch uploads
-
-# MEMORY-OPTIMIZED SDK Configuration for Render
-os.environ.setdefault('BATCH_SIZE', '1')        # Process 1 file at a time for memory
-os.environ.setdefault('MAX_WORKERS', '1')       # 1 worker thread for memory
-os.environ.setdefault('MAX_RETRIES', '10')      # Reduced retries
-os.environ.setdefault('MAX_RETRY_WAIT_TIME', '30')  # Keep this
-os.environ.setdefault('PDF_TO_IMAGE_DPI', '72') # Lower DPI for memory
-os.environ.setdefault('SPLIT_SIZE', '5')        # Smaller chunks
-os.environ.setdefault('EXTRACTION_SPLIT_SIZE', '25')  # Smaller extraction chunks
-os.environ.setdefault('RETRY_LOGGING_STYLE', 'log_msg')
-
-print("🔧 [MEMORY] Memory-optimized settings applied for agentic-doc")
 
 # Global storage
 processed_docs = {}
@@ -807,7 +812,10 @@ def process_documents():
             }
         }
         
-        force_garbage_collection()
+        try:
+            gc.collect()
+        except:
+            pass
         log_memory_usage("END of batch process_documents")
         
         # Response
