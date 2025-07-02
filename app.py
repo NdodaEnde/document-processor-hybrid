@@ -424,16 +424,13 @@ def process_single_file_with_timeout(file_path: str, batch_id: str, include_marg
                         extraction_error = None
                         
                         if hasattr(parsed_doc, 'extraction'):
-                            # This is the structured extraction result
-                            extracted_data = parsed_doc.extraction
-                            if hasattr(extracted_data, 'dict'):
-                                extracted_data = extracted_data.dict()
+                            extracted_data = serialize_pydantic_data(parsed_doc.extraction)
                         
                         if hasattr(parsed_doc, 'extraction_metadata'):
-                            extraction_metadata = parsed_doc.extraction_metadata
+                            extraction_metadata = serialize_pydantic_data(parsed_doc.extraction_metadata)
                         
                         if hasattr(parsed_doc, 'extraction_error'):
-                            extraction_error = parsed_doc.extraction_error
+                            extraction_error = str(parsed_doc.extraction_error) if parsed_doc.extraction_error else None
                         
                         # Calculate confidence based on completeness
                         confidence_score = calculate_confidence_score(extracted_data) if extracted_data else 0.0
@@ -757,6 +754,44 @@ def process_batch_with_timeout_protection(saved_files: List[str], batch_id: str,
         "total_processing_time": total_processing_time,
         "grounding_dir": grounding_dir
     }
+
+def serialize_pydantic_data(data):
+    """Safely serialize Pydantic models and metadata to JSON"""
+    if data is None:
+        return None
+    
+    try:
+        # If it's a Pydantic model with dict() method
+        if hasattr(data, 'dict'):
+            return data.dict()
+        
+        # If it's a Pydantic model with model_dump() method (v2)
+        if hasattr(data, 'model_dump'):
+            return data.model_dump()
+        
+        # If it's already a dict
+        if isinstance(data, dict):
+            # Recursively serialize nested objects
+            serialized = {}
+            for key, value in data.items():
+                serialized[key] = serialize_pydantic_data(value)
+            return serialized
+        
+        # If it's a list
+        if isinstance(data, list):
+            return [serialize_pydantic_data(item) for item in data]
+        
+        # If it's a basic type
+        if isinstance(data, (str, int, float, bool, type(None))):
+            return data
+        
+        # For any other object, convert to string representation
+        return str(data)
+        
+    except Exception as e:
+        print(f"[SERIALIZATION] Error serializing {type(data)}: {e}")
+        return f"<Serialization Error: {type(data).__name__}>"
+
 
 # =============================================================================
 # SERIALIZATION FUNCTIONS (KEEP YOUR PROVEN WORKING CODE)
@@ -1242,7 +1277,7 @@ def get_document_data(batch_id):
         
         response = {
             "batch_id": batch_id,
-            "result": batch_data["result"],
+            "result": serialize_pydantic_data(batch_data["result"]),
             "files": [os.path.basename(f) for f in batch_data["files"]],
             "processed_at": batch_data["processed_at"],
             "groundings_dir": batch_data.get("groundings_dir"),
