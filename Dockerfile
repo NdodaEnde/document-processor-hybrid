@@ -20,7 +20,6 @@ ENV GUNICORN_WORKERS=1
 ENV GUNICORN_MAX_REQUESTS=100
 ENV GUNICORN_MAX_REQUESTS_JITTER=10
 ENV GUNICORN_GRACEFUL_TIMEOUT=180
-ENV GUNICORN_KEEPALIVE=2
 
 # Memory optimization for agentic-doc (these should also be set in Render dashboard)
 ENV BATCH_SIZE=1
@@ -40,7 +39,6 @@ GUNICORN_WORKERS="${GUNICORN_WORKERS:-1}"\n\
 GUNICORN_MAX_REQUESTS="${GUNICORN_MAX_REQUESTS:-100}"\n\
 GUNICORN_MAX_REQUESTS_JITTER="${GUNICORN_MAX_REQUESTS_JITTER:-10}"\n\
 GUNICORN_GRACEFUL_TIMEOUT="${GUNICORN_GRACEFUL_TIMEOUT:-180}"\n\
-GUNICORN_KEEPALIVE="${GUNICORN_KEEPALIVE:-2}"\n\
 \n\
 echo "🚀 Starting Document Processing Microservice..."\n\
 echo "⚙️  Gunicorn timeout: ${GUNICORN_TIMEOUT}s"\n\
@@ -56,7 +54,6 @@ exec gunicorn app:app \\\n\
     --graceful-timeout "$GUNICORN_GRACEFUL_TIMEOUT" \\\n\
     --max-requests "$GUNICORN_MAX_REQUESTS" \\\n\
     --max-requests-jitter "$GUNICORN_MAX_REQUESTS_JITTER" \\\n\
-    --keepalive "$GUNICORN_KEEPALIVE" \\\n\
     --access-logfile "-" \\\n\
     --error-logfile "-" \\\n\
     --log-level info \\\n\
