@@ -13,13 +13,17 @@ Comprehensive microservice that extends your existing architecture with:
 
 Features:
 - Enhanced timeout protection with graceful fallbacks
-- Direct bytes processing (no temp files) using Landing AI v0.2.4+
+- Direct bytes processing (no temp files) using agentic-doc v0.2.4+
 - Pydantic-based structured extraction with questionnaire support
 - Robust error handling and recovery
 - Memory optimization for Render
 - Real-time progress tracking
 - Multi-section document processing
 - Comprehensive logging and monitoring
+
+Installation Requirements:
+- pip install agentic-doc>=0.2.4
+- Set LANDINGAI_API_KEY environment variable
 """
 
 import os
@@ -62,14 +66,15 @@ from dataclasses import dataclass
 from pydantic import BaseModel, Field
 import queue
 
-# LandingAI imports
+# LandingAI agentic-doc imports (your existing working import)
 try:
-    from landingai.predict import parse
+    from agentic_doc.parse import parse
     PARSE_FUNCTION_AVAILABLE = True
-    print("✅ LandingAI parse function available - Enhanced extraction enabled")
+    print("✅ agentic-doc parse function available - Enhanced extraction enabled")
 except ImportError as e:
     PARSE_FUNCTION_AVAILABLE = False
-    print(f"❌ LandingAI parse function not available: {e}")
+    print(f"❌ agentic-doc parse function not available: {e}")
+    print("💡 Make sure agentic-doc is installed: pip install agentic-doc")
 
 # =============================================================================
 # ENHANCED PYDANTIC MODELS - BUILDING ON EXISTING STRUCTURE
@@ -763,13 +768,23 @@ class EnhancedDocumentProcessor:
     """Enhanced document processing with section detection and validation"""
     
     @staticmethod
-    def extract_text_from_response(landingai_response) -> str:
-        """Extract text content from LandingAI response for section detection"""
+    def extract_text_from_response(agentic_doc_response) -> str:
+        """Extract text content from agentic-doc response for section detection"""
         try:
-            if hasattr(landingai_response, 'extraction'):
+            # agentic-doc provides markdown and chunks
+            if hasattr(agentic_doc_response, 'markdown'):
+                return agentic_doc_response.markdown.lower()
+            elif hasattr(agentic_doc_response, 'chunks'):
+                # Extract text from chunks
+                chunks_text = ""
+                for chunk in agentic_doc_response.chunks:
+                    if hasattr(chunk, 'content'):
+                        chunks_text += chunk.content + " "
+                return chunks_text.lower()
+            elif hasattr(agentic_doc_response, 'extraction'):
                 # Convert extracted data to searchable text
                 import json
-                data_str = json.dumps(landingai_response.extraction.dict() if hasattr(landingai_response.extraction, 'dict') else landingai_response.extraction)
+                data_str = json.dumps(agentic_doc_response.extraction.dict() if hasattr(agentic_doc_response.extraction, 'dict') else agentic_doc_response.extraction)
                 return data_str.lower()
             return ""
         except:
@@ -956,7 +971,7 @@ def process_enhanced_document_from_bytes(file_bytes: bytes, filename: str, batch
             
             print(f"[ENHANCED] Using model: {initial_model.__name__}")
             
-            # Step 2: Process with LandingAI
+            # Step 2: Process with agentic-doc (your existing working method)
             results = parse(
                 file_bytes,
                 extraction_model=initial_model,
@@ -966,12 +981,12 @@ def process_enhanced_document_from_bytes(file_bytes: bytes, filename: str, batch
             )
             
             if not results or len(results) == 0:
-                raise Exception("No results returned from LandingAI extraction")
+                raise Exception("No results returned from agentic-doc extraction")
             
             parsed_doc = results[0]
             processing_time = time.time() - start_time
             
-            # Step 3: Extract structured data
+            # Step 3: Extract structured data (your existing working format)
             extracted_data = None
             extraction_metadata = None
             extraction_error = None
