@@ -329,6 +329,19 @@ class PeriodicQuestionnaire(BaseModel):
     ohp_signature_present: Optional[bool] = Field(description="OHP signature present")
     omp_signature_present: Optional[bool] = Field(description="OMP signature present")
 
+class UrinalysisResults(BaseModel):
+    """Urinalysis findings"""
+    blood_present: Optional[bool] = Field(description="Blood present in urine")
+    protein_present: Optional[bool] = Field(description="Protein present in urine")
+    glucose_present: Optional[bool] = Field(description="Glucose present in urine")
+    trace_elements: Optional[str] = Field(description="Trace elements noted")
+
+class LabValues(BaseModel):
+    """Laboratory test values"""
+    random_glucose_mmol: Optional[float] = Field(description="Random glucose in mmol/L")
+    random_cholesterol_mmol: Optional[float] = Field(description="Random cholesterol in mmol/L")
+    clinical_notes: Optional[str] = Field(description="Clinical interpretation of abnormal results")
+
 # =============================================================================
 # ENHANCED MODEL ROUTING - NEW FUNCTION
 # =============================================================================
