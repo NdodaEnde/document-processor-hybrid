@@ -434,7 +434,8 @@ def process_document_with_enhanced_serialization(file_bytes: bytes, filename: st
         # Step 1: Smart model selection
         if document_type == 'auto-detect':
             # For auto-detect, default to original working model first
-            extraction_model = CertificateOfFitness
+            detected_type = detect_document_type(document_content)
+            extraction_model = get_enhanced_extraction_model(detected_type)
             print(f"[ENHANCED] Auto-detect: Using ORIGINAL working model first")
         else:
             extraction_model = get_enhanced_extraction_model(document_type)
