@@ -432,51 +432,77 @@ def process_document_with_enhanced_serialization(file_bytes: bytes, filename: st
             raise Exception("agentic-doc parse function not available")
         
         # Step 1: Smart model selection
-        if document_type == 'auto-detect':
-             # 1. Extract text content first
-            quick_results = parse(file_bytes, extraction_model=None, ...)
-            document_content = quick_results[0].markdown
-    
-            # 2. Actually detect the document type
-            detected_type = detect_document_type(document_content)
-            extraction_model = get_enhanced_extraction_model(detected_type)
-        else:
-            extraction_model = get_enhanced_extraction_model(document_type)
+        # Step 1: Smart model selection with PROPER auto-detect
+if document_type == 'auto-detect':
+    # First, do a quick text extraction to detect document type
+    try:
+        # Use agentic-doc to extract text first for type detection
+        # Use CertificateOfFitness as a basic model just to get the text content
+        quick_results = parse(
+            file_bytes,
+            extraction_model=CertificateOfFitness,  # FIXED: Use actual model, not None
+            include_marginalia=False,
+            include_metadata_in_markdown=False
+        )
         
-        # Step 2: Process with agentic-doc
-        try:
-            results = parse(
-                file_bytes,
-                extraction_model=extraction_model,
-                include_marginalia=True,
-                include_metadata_in_markdown=True
-            )
-        except Exception as api_error:
-            print(f"[ENHANCED] API Error with {extraction_model.__name__}: {api_error}")
-            # Fallback to original working model
-            if extraction_model != CertificateOfFitness:
-                print(f"[ENHANCED] Falling back to ORIGINAL working model")
-                extraction_model = CertificateOfFitness
-                results = parse(
-                    file_bytes,
-                    extraction_model=extraction_model,
-                    include_marginalia=True,
-                    include_metadata_in_markdown=True
-                )
+        # Extract text content from the results
+        document_content = ""
+        if quick_results and len(quick_results) > 0:
+            if hasattr(quick_results[0], 'markdown'):
+                document_content = quick_results[0].markdown
+            elif hasattr(quick_results[0], 'text'):
+                document_content = quick_results[0].text
             else:
-                raise api_error
+                document_content = str(quick_results[0])
         
-        processing_time = time.time() - start_time
+        # Now detect the document type from content
+        detected_type = detect_document_type(document_content)
+        extraction_model = get_enhanced_extraction_model(detected_type)
+        print(f"[ENHANCED] Auto-detected as: {detected_type}, using model: {extraction_model.__name__}")
         
-        if not results or len(results) == 0:
-            raise Exception("No results returned from extraction")
-        
-        parsed_doc = results[0]
-        
-        # Step 3: Extract data using ORIGINAL serialization methods
-        extracted_data = None
-        extraction_metadata = None
-        extraction_error = None
+    except Exception as detect_error:
+        print(f"[ENHANCED] Auto-detect failed: {detect_error}, falling back to certificate model")
+        extraction_model = CertificateOfFitness
+        detected_type = "certificate-fitness"
+else:
+    extraction_model = get_enhanced_extraction_model(document_type)
+    detected_type = document_type
+
+# Step 2: Process with agentic-doc for structured extraction
+try:
+    results = parse(
+        file_bytes,
+        extraction_model=extraction_model,
+        include_marginalia=True,
+        include_metadata_in_markdown=True
+    )
+except Exception as api_error:
+    print(f"[ENHANCED] API Error with {extraction_model.__name__}: {api_error}")
+    # Fallback to original working model
+    if extraction_model != CertificateOfFitness:
+        print(f"[ENHANCED] Falling back to ORIGINAL working model")
+        extraction_model = CertificateOfFitness
+        detected_type = "certificate-fitness"
+        results = parse(
+            file_bytes,
+            extraction_model=extraction_model,
+            include_marginalia=True,
+            include_metadata_in_markdown=True
+        )
+    else:
+        raise api_error
+
+processing_time = time.time() - start_time
+
+if not results or len(results) == 0:
+    raise Exception("No results returned from extraction")
+
+parsed_doc = results[0]
+
+# Step 3: Extract data using ORIGINAL serialization methods
+extracted_data = None
+extraction_metadata = None
+extraction_error = None
         
         if hasattr(parsed_doc, 'extraction'):
             # Use your proven serialization function
