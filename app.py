@@ -301,6 +301,9 @@ class PreEmploymentQuestionnaire(BaseModel):
     company_name: Optional[str] = Field(description="Company name")
     employee_signature_present: Optional[bool] = Field(description="Employee signature present")
     health_practitioner_name: Optional[str] = Field(description="Health practitioner name")
+    urinalysis_results: Optional[UrinalysisResults] = Field(description="Urine test results from urinalysis table")
+    lab_values: Optional[LabValues] = Field(description="Laboratory test values and clinical notes")
+    
 
 class PhysicalExamination(BaseModel):
     """Physical examination findings for periodic questionnaires"""
