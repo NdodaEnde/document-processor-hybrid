@@ -290,6 +290,19 @@ class WorkingAtHeightsAssessment(BaseModel):
     chronic_diseases: Optional[bool] = Field(description="Chronic diseases like diabetes or epilepsy")
     additional_comments: Optional[str] = Field(description="Additional clinical comments or notes")
 
+class UrinalysisResults(BaseModel):
+    """Urinalysis findings"""
+    blood_present: Optional[bool] = Field(description="Blood present in urine")
+    protein_present: Optional[bool] = Field(description="Protein present in urine")
+    glucose_present: Optional[bool] = Field(description="Glucose present in urine")
+    trace_elements: Optional[str] = Field(description="Trace elements noted")
+
+class LabValues(BaseModel):
+    """Laboratory test values"""
+    random_glucose_mmol: Optional[float] = Field(description="Random glucose in mmol/L")
+    random_cholesterol_mmol: Optional[float] = Field(description="Random cholesterol in mmol/L")
+    clinical_notes: Optional[str] = Field(description="Clinical interpretation of abnormal results")
+
 class PreEmploymentQuestionnaire(BaseModel):
     """Pre-employment medical questionnaire - NEW MODEL"""
     document_classification: str = Field(description="Document type: pre-employment questionnaire", default="pre-employment questionnaire")
@@ -336,18 +349,6 @@ class PeriodicQuestionnaire(BaseModel):
     ohp_signature_present: Optional[bool] = Field(description="OHP signature present")
     omp_signature_present: Optional[bool] = Field(description="OMP signature present")
 
-class UrinalysisResults(BaseModel):
-    """Urinalysis findings"""
-    blood_present: Optional[bool] = Field(description="Blood present in urine")
-    protein_present: Optional[bool] = Field(description="Protein present in urine")
-    glucose_present: Optional[bool] = Field(description="Glucose present in urine")
-    trace_elements: Optional[str] = Field(description="Trace elements noted")
-
-class LabValues(BaseModel):
-    """Laboratory test values"""
-    random_glucose_mmol: Optional[float] = Field(description="Random glucose in mmol/L")
-    random_cholesterol_mmol: Optional[float] = Field(description="Random cholesterol in mmol/L")
-    clinical_notes: Optional[str] = Field(description="Clinical interpretation of abnormal results")
 
 # =============================================================================
 # ENHANCED MODEL ROUTING - NEW FUNCTION
