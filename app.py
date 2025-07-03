@@ -276,15 +276,19 @@ class MedicalHistoryConditions(BaseModel):
     tuberculosis_pneumonia: Optional[bool] = Field(description="Tuberculosis or pneumonia")
 
 class WorkingAtHeightsAssessment(BaseModel):
-    """Working at heights safety assessment"""
+    """Complete Working at Heights safety assessment"""
     advised_not_work_height: Optional[bool] = Field(description="Ever advised not to work at height")
     serious_occupational_accident: Optional[bool] = Field(description="Serious occupational accident or disease")
     fear_heights_enclosed_spaces: Optional[bool] = Field(description="Fear of heights or enclosed spaces")
     fits_seizures_epilepsy: Optional[bool] = Field(description="Fits, seizures, epilepsy, blackouts")
     suicide_thoughts_attempts: Optional[bool] = Field(description="Suicide thoughts or attempts")
     mental_health_professional: Optional[bool] = Field(description="Seen mental health professional")
+    thoughts_not_own: Optional[bool] = Field(description="Thoughts from God/devil/spirits")
     substance_abuse_problem: Optional[bool] = Field(description="Substance abuse problem")
+    other_problems_affecting_work: Optional[bool] = Field(description="Other problems affecting work at heights")
     informed_safety_requirements: Optional[bool] = Field(description="Informed of safety requirements")
+    chronic_diseases: Optional[bool] = Field(description="Chronic diseases like diabetes or epilepsy")
+    additional_comments: Optional[str] = Field(description="Additional clinical comments or notes")
 
 class PreEmploymentQuestionnaire(BaseModel):
     """Pre-employment medical questionnaire - NEW MODEL"""
