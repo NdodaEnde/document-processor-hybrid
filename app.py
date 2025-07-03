@@ -383,10 +383,10 @@ class PeriodicQuestionnaire(BaseModel):
     protocol_number: Optional[str] = Field(description="Protocol or reference number")
 
 class CertificateOfFitness(BaseModel):
-    """Enhanced Certificate of Fitness - maintains backward compatibility"""
-    document_classification: str = Field(description="Document type", default="certificate of fitness")
+    """Complete Certificate of Fitness - EXACT COPY from working microservice"""
+    document_classification: str = Field(description="Document type")
     employee_info: EmployeeInfo = Field(description="Employee details")
-    medical_examination: MedicalExamination = Field(description="Medical examination results")
+    medical_examination: MedicalExamination = Field(description="Medical exam results")
     medical_tests: MedicalTests = Field(description="Test results")
     medical_practitioner: MedicalPractitioner = Field(description="Doctor and practice information")
 
@@ -562,8 +562,16 @@ class SectionDetector:
 # ENHANCED MODEL SELECTOR
 # =============================================================================
 
+def get_extraction_model(document_type: str):
+    """Get appropriate Pydantic model for document type - EXACT COPY from working microservice"""
+    type_mapping = {
+        'certificate-fitness': CertificateOfFitness,
+        'certificate': CertificateOfFitness,
+    }
+    return type_mapping.get(document_type.lower(), CertificateOfFitness)
+
 def get_enhanced_extraction_model(document_type: str, detected_sections: Optional[List[Dict]] = None):
-    """Enhanced model selector with intelligent detection"""
+    """Enhanced model selector that handles questionnaires and compound documents"""
     
     document_type_lower = document_type.lower()
     
@@ -962,19 +970,26 @@ def process_enhanced_document_from_bytes(file_bytes: bytes, filename: str, batch
             if not PARSE_FUNCTION_AVAILABLE:
                 raise Exception("LandingAI parse function not available")
             
-            # Step 1: Initial extraction for section detection
-            if document_type == 'auto-detect':
-                # Use compound model for initial detection
-                initial_model = CompoundMedicalDocument
+            # Step 1: Select extraction model
+            if document_type == "auto-detect":
+                # For auto-detect, try section detection first
+                document_text = ""  # We'll extract this from response if needed
+                detected_sections = SectionDetector.detect_sections(document_text)
+                section_types = [s["section_type"] for s in detected_sections]
+                extraction_model = get_enhanced_extraction_model("compound", detected_sections)
+            elif document_type in ['certificate-fitness', 'certificate']:
+                # Use original working model for certificates
+                extraction_model = get_extraction_model(document_type)
             else:
-                initial_model = get_enhanced_extraction_model(document_type)
+                # Use enhanced models for questionnaires
+                extraction_model = get_enhanced_extraction_model(document_type, None)
             
-            print(f"[ENHANCED] Using model: {initial_model.__name__}")
+            print(f"[ENHANCED] Using model: {extraction_model.__name__}")
             
             # Step 2: Process with agentic-doc (your existing working method)
             results = parse(
                 file_bytes,
-                extraction_model=initial_model,
+                extraction_model=extraction_model,
                 include_marginalia=include_marginalia,
                 include_metadata_in_markdown=include_metadata,
                 grounding_save_dir=grounding_dir if save_groundings else None
