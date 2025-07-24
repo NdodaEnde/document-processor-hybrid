@@ -58,8 +58,9 @@ load_dotenv()
 # Load API key
 LANDING_AI_API_KEY = os.environ.get('LANDING_AI_API_KEY')
 if LANDING_AI_API_KEY:
-    print(f"✅ API Key loaded: {LANDING_AI_API_KEY[:10]}...")
     os.environ['LANDINGAI_API_KEY'] = LANDING_AI_API_KEY
+    print(f"✅ API Key loaded: {LANDING_AI_API_KEY[:10]}...")
+    
 else:
     print("⚠️ WARNING: LANDING_AI_API_KEY not found")
 
