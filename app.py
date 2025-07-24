@@ -57,9 +57,22 @@ load_dotenv()
 
 # Load API key
 LANDING_AI_API_KEY = os.environ.get('LANDING_AI_API_KEY')
+
+# After loading the API key, try to configure agentic_doc
 if LANDING_AI_API_KEY:
-    os.environ['LANDINGAI_API_KEY'] = LANDING_AI_API_KEY
     print(f"✅ API Key loaded: {LANDING_AI_API_KEY[:10]}...")
+    os.environ['LANDINGAI_API_KEY'] = LANDING_AI_API_KEY
+    
+    # Try to configure agentic_doc directly
+    try:
+        import agentic_doc
+        # Check if there's a config or setup method
+        if hasattr(agentic_doc, 'config'):
+            agentic_doc.config.api_key = LANDING_AI_API_KEY
+        elif hasattr(agentic_doc, 'set_api_key'):
+            agentic_doc.set_api_key(LANDING_AI_API_KEY)
+    except Exception as config_error:
+        print(f"[CONFIG] Could not configure agentic_doc: {config_error}")
     
 else:
     print("⚠️ WARNING: LANDING_AI_API_KEY not found")
