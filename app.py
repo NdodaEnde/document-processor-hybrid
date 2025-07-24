@@ -50,6 +50,18 @@ from dataclasses import dataclass
 # Pydantic imports
 from pydantic import BaseModel, Field
 import queue
+from dotenv import load_dotenv
+
+
+load_dotenv()
+
+# Load API key
+LANDINGAI_API_KEY = os.environ.get('LANDINGAI_API_KEY')
+if LANDINGAI_API_KEY:
+    print(f"✅ API Key loaded: {LANDINGAI_API_KEY[:10]}...")
+    os.environ['LANDINGAI_API_KEY'] = LANDINGAI_API_KEY
+else:
+    print("⚠️ WARNING: LANDINGAI_API_KEY not found")
 
 # LandingAI imports
 try:
