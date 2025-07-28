@@ -25,17 +25,17 @@ except Exception as e:
 
 # Verify API keys are loaded (CORRECT VARIABLE NAMES)
 vision_agent_key = os.getenv('VISION_AGENT_API_KEY')  # This is the correct one for agentic-doc
-landing_ai_key = os.getenv('LANDINGAI_API_KEY')      # Alternative/backup variable name
+landing_ai_key = os.getenv('LANDING_AI_API_KEY')      # Alternative/backup variable name
 
 if vision_agent_key:
     print(f"✅ VISION_AGENT_API_KEY loaded (length: {len(vision_agent_key)})")
 elif landing_ai_key:
-    print(f"✅ LANDINGAI_API_KEY loaded as fallback (length: {len(landing_ai_key)})")
+    print(f"✅ LANDING_AI_API_KEY loaded as fallback (length: {len(landing_ai_key)})")
     # Set the correct variable name for agentic-doc
     os.environ['VISION_AGENT_API_KEY'] = landing_ai_key
     print("✅ Set VISION_AGENT_API_KEY from LANDINGAI_API_KEY")
 else:
-    print("❌ Neither VISION_AGENT_API_KEY nor LANDINGAI_API_KEY found in environment")
+    print("❌ Neither VISION_AGENT_API_KEY nor LANDING_AI_API_KEY found in environment")
     print("Please ensure your .env file contains: VISION_AGENT_API_KEY=your_api_key")
 
 # Memory optimization settings
@@ -496,128 +496,227 @@ def calculate_confidence_score(extracted_data: Dict) -> float:
     
     return filled_fields / total_fields
 
-# =============================================================================
-# ENHANCED PROCESSING FUNCTION
-# =============================================================================
+"""
+Enhanced Processing Function with Multiple Extraction Strategies
+================================================================
 
-def process_document_with_comprehensive_extraction(file_bytes: bytes, filename: str, document_type: str = 'auto-detect') -> Dict:
-    """Process document with comprehensive multi-document support"""
+This version tries multiple approaches to extract data from the PDF
+"""
+
+def process_document_with_enhanced_extraction(file_bytes: bytes, filename: str, document_type: str = 'auto-detect') -> Dict:
+    """Enhanced processing with multiple extraction strategies"""
     
     start_time = time.time()
     file_size_mb = len(file_bytes) / (1024 * 1024)
     
-    print(f"[COMPREHENSIVE] Processing {filename} ({file_size_mb:.1f}MB, Type: {document_type})")
+    print(f"[ENHANCED] Processing {filename} ({file_size_mb:.1f}MB, Type: {document_type})")
     
     try:
         if not PARSE_FUNCTION_AVAILABLE:
             raise Exception("agentic-doc parse function not available")
         
-        # Step 1: Enhanced document type detection
-        if document_type == 'auto-detect':
-            try:
-                # Quick extraction for content analysis
-                quick_results = parse(
-                    file_bytes,
-                    extraction_model=CertificateOfFitness,  # Use working model for text extraction
-                    include_marginalia=False,
-                    include_metadata_in_markdown=False
-                )
+        # Strategy 1: Try with simplified models first
+        extraction_strategies = [
+            ("certificate_of_fitness", CertificateOfFitness),
+            ("audiometric_test_results", AudiometricTestResults),
+            ("medical_questionnaire", MedicalQuestionnaire),
+            ("spirometry_report", SpirometryReport),
+        ]
         
-                # Extract text content
-                document_content = ""
-                if quick_results and len(quick_results) > 0:
-                    if hasattr(quick_results[0], 'markdown'):
-                        document_content = quick_results[0].markdown
-                    elif hasattr(quick_results[0], 'text'):
-                        document_content = quick_results[0].text
-                    else:
-                        document_content = str(quick_results[0])
+        best_result = None
+        best_confidence = 0.0
+        document_content = ""
         
-                # Detect document type using enhanced detection
-                detected_type = detect_document_type_comprehensive(document_content)
-                extraction_model = get_enhanced_extraction_model(detected_type)
-                print(f"[COMPREHENSIVE] Auto-detected as: {detected_type}, using model: {extraction_model.__name__}")
-        
-            except Exception as detect_error:
-                print(f"[COMPREHENSIVE] Auto-detect failed: {detect_error}, falling back to certificate model")
-                extraction_model = CertificateOfFitness
-                detected_type = "certificate_of_fitness"
-        else:
-            extraction_model = get_enhanced_extraction_model(document_type)
-            detected_type = document_type
-
-        # Step 2: Process with the selected model
+        # First, try to get document content for analysis
         try:
-            results = parse(
+            print("[ENHANCED] Extracting document content for analysis...")
+            content_results = parse(
                 file_bytes,
-                extraction_model=extraction_model,
+                extraction_model=CertificateOfFitness,
                 include_marginalia=True,
                 include_metadata_in_markdown=True
             )
-        except Exception as api_error:
-            print(f"[COMPREHENSIVE] API Error with {extraction_model.__name__}: {api_error}")
-            # Fallback to working model
-            if extraction_model != CertificateOfFitness:
-                print(f"[COMPREHENSIVE] Falling back to Certificate of Fitness model")
-                extraction_model = CertificateOfFitness
-                detected_type = "certificate_of_fitness"
+            
+            if content_results and len(content_results) > 0:
+                parsed_doc = content_results[0]
+                
+                # Try multiple ways to get content
+                if hasattr(parsed_doc, 'markdown') and parsed_doc.markdown:
+                    document_content = parsed_doc.markdown
+                    print(f"[ENHANCED] Got markdown content: {len(document_content)} chars")
+                elif hasattr(parsed_doc, 'text') and parsed_doc.text:
+                    document_content = parsed_doc.text
+                    print(f"[ENHANCED] Got text content: {len(document_content)} chars")
+                
+                # Also check if there's any extraction data
+                if hasattr(parsed_doc, 'extraction') and parsed_doc.extraction:
+                    print("[ENHANCED] Found extraction data in content extraction")
+                    extracted_data = serialize_pydantic_data(parsed_doc.extraction)
+                    if extracted_data and isinstance(extracted_data, dict):
+                        confidence = calculate_confidence_score(extracted_data)
+                        print(f"[ENHANCED] Content extraction confidence: {confidence:.3f}")
+                        best_result = {
+                            "extraction": extracted_data,
+                            "metadata": serialize_metadata(getattr(parsed_doc, 'extraction_metadata', None)),
+                            "error": str(parsed_doc.extraction_error) if hasattr(parsed_doc, 'extraction_error') and parsed_doc.extraction_error else None,
+                            "model": "CertificateOfFitness",
+                            "type": "certificate_of_fitness"
+                        }
+                        best_confidence = confidence
+        except Exception as content_error:
+            print(f"[ENHANCED] Content extraction failed: {content_error}")
+        
+        # Strategy 2: If we have document content, try auto-detection
+        detected_type = "certificate_of_fitness"
+        if document_content and len(document_content) > 200:
+            try:
+                detected_type = detect_document_type_comprehensive(document_content)
+                print(f"[ENHANCED] Auto-detected document type: {detected_type}")
+            except Exception as detect_error:
+                print(f"[ENHANCED] Detection failed: {detect_error}")
+        
+        # Strategy 3: Try the detected type first, then fallback to other types
+        if document_type == 'auto-detect':
+            primary_model = get_enhanced_extraction_model(detected_type)
+            strategies_to_try = [(detected_type, primary_model)] + [
+                (doc_type, model) for doc_type, model in extraction_strategies 
+                if model != primary_model
+            ]
+        else:
+            # Use specified document type
+            specified_model = get_enhanced_extraction_model(document_type)
+            strategies_to_try = [(document_type, specified_model)]
+        
+        # Try each extraction strategy
+        for strategy_type, strategy_model in strategies_to_try:
+            if best_confidence > 0.5:  # If we already have good results, stop
+                break
+                
+            try:
+                print(f"[ENHANCED] Trying extraction with {strategy_model.__name__}...")
+                
                 results = parse(
                     file_bytes,
-                    extraction_model=extraction_model,
+                    extraction_model=strategy_model,
                     include_marginalia=True,
                     include_metadata_in_markdown=True
                 )
-            else:
-                raise api_error
-
+                
+                if results and len(results) > 0:
+                    parsed_doc = results[0]
+                    
+                    if hasattr(parsed_doc, 'extraction') and parsed_doc.extraction:
+                        extracted_data = serialize_pydantic_data(parsed_doc.extraction)
+                        
+                        if extracted_data and isinstance(extracted_data, dict):
+                            confidence = calculate_confidence_score(extracted_data)
+                            print(f"[ENHANCED] {strategy_model.__name__} confidence: {confidence:.3f}")
+                            
+                            if confidence > best_confidence:
+                                best_confidence = confidence
+                                best_result = {
+                                    "extraction": extracted_data,
+                                    "metadata": serialize_metadata(getattr(parsed_doc, 'extraction_metadata', None)),
+                                    "error": str(parsed_doc.extraction_error) if hasattr(parsed_doc, 'extraction_error') and parsed_doc.extraction_error else None,
+                                    "model": strategy_model.__name__,
+                                    "type": strategy_type
+                                }
+                        else:
+                            print(f"[ENHANCED] {strategy_model.__name__} returned empty/invalid data")
+                    else:
+                        print(f"[ENHANCED] {strategy_model.__name__} returned no extraction")
+                else:
+                    print(f"[ENHANCED] {strategy_model.__name__} returned no results")
+                    
+            except Exception as strategy_error:
+                print(f"[ENHANCED] {strategy_model.__name__} failed: {strategy_error}")
+                continue
+        
         processing_time = time.time() - start_time
-
-        if not results or len(results) == 0:
-            raise Exception("No results returned from extraction")
-
-        parsed_doc = results[0]
-
-        # Step 3: Extract and serialize data
-        extracted_data = None
-        extraction_metadata = None
-        extraction_error = None
         
-        if hasattr(parsed_doc, 'extraction'):
-            extracted_data = serialize_pydantic_data(parsed_doc.extraction)
-        
-        if hasattr(parsed_doc, 'extraction_metadata'):
-            extraction_metadata = serialize_metadata(parsed_doc.extraction_metadata)
-        
-        if hasattr(parsed_doc, 'extraction_error'):
-            extraction_error = str(parsed_doc.extraction_error) if parsed_doc.extraction_error else None
-        
-        # Step 4: Calculate confidence
-        confidence_score = calculate_confidence_score(extracted_data) if extracted_data else 0.0
-        
-        print(f"[COMPREHENSIVE] ✅ Completed {filename} in {processing_time:.2f}s, Confidence: {confidence_score:.3f}")
-        
-        return {
-            "status": "success",
-            "filename": filename,
-            "data": {
-                "extraction_method": "comprehensive_multi_document",
-                "document_type": detected_type,
-                "model_used": extraction_model.__name__,
-                "processing_time": processing_time,
-                "file_size_mb": file_size_mb,
-                "confidence_score": confidence_score,
-                "structured_data": extracted_data,
-                "extraction_metadata": extraction_metadata,
-                "extraction_error": extraction_error,
-                "fallback_used": extraction_model == CertificateOfFitness and detected_type != 'certificate_of_fitness'
-            },
-            "processing_time": processing_time
-        }
+        # Return best result or fallback
+        if best_result and best_confidence > 0:
+            print(f"[ENHANCED] ✅ Best result: {best_result['model']} with confidence {best_confidence:.3f}")
+            
+            return {
+                "status": "success",
+                "filename": filename,
+                "data": {
+                    "extraction_method": "enhanced_multi_strategy",
+                    "document_type": best_result['type'],
+                    "model_used": best_result['model'],
+                    "processing_time": processing_time,
+                    "file_size_mb": file_size_mb,
+                    "confidence_score": best_confidence,
+                    "structured_data": best_result['extraction'],
+                    "extraction_metadata": best_result['metadata'],
+                    "extraction_error": best_result['error'],
+                    "fallback_used": best_result['model'] == 'CertificateOfFitness' and best_result['type'] != 'certificate_of_fitness',
+                    "strategies_tried": len(strategies_to_try),
+                    "document_content_length": len(document_content)
+                },
+                "processing_time": processing_time
+            }
+        else:
+            # If no extraction worked, return document content analysis
+            print(f"[ENHANCED] ⚠️  No successful extraction, returning content analysis")
+            
+            # Try to extract some basic info from the document content
+            basic_info = {}
+            if document_content:
+                # Extract some basic patterns
+                import re
+                
+                # Look for names
+                name_patterns = [
+                    r'Name[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+                    r'Patient[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+                    r'Employee[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)'
+                ]
+                
+                for pattern in name_patterns:
+                    match = re.search(pattern, document_content, re.IGNORECASE)
+                    if match:
+                        basic_info['name'] = match.group(1)
+                        break
+                
+                # Look for ID numbers
+                id_pattern = r'(?:ID|Employee)\s*(?:Number|No)[:\s]*(\d+)'
+                id_match = re.search(id_pattern, document_content, re.IGNORECASE)
+                if id_match:
+                    basic_info['id_number'] = id_match.group(1)
+                
+                # Look for companies
+                company_pattern = r'Company[:\s]+([A-Z][A-Z\s]+)'
+                company_match = re.search(company_pattern, document_content, re.IGNORECASE)
+                if company_match:
+                    basic_info['company'] = company_match.group(1).strip()
+            
+            return {
+                "status": "success",
+                "filename": filename,
+                "data": {
+                    "extraction_method": "content_analysis_fallback",
+                    "document_type": detected_type,
+                    "model_used": "ContentAnalysis",
+                    "processing_time": processing_time,
+                    "file_size_mb": file_size_mb,
+                    "confidence_score": 0.1 if basic_info else 0.0,
+                    "structured_data": basic_info,
+                    "extraction_metadata": {"content_length": len(document_content)},
+                    "extraction_error": "No structured extraction succeeded, using content analysis",
+                    "fallback_used": True,
+                    "strategies_tried": len(strategies_to_try),
+                    "document_content_length": len(document_content),
+                    "document_content_sample": document_content[:500] + "..." if len(document_content) > 500 else document_content
+                },
+                "processing_time": processing_time
+            }
     
     except Exception as e:
         processing_time = time.time() - start_time
         error_msg = f"Failed to process {filename}: {str(e)}"
-        print(f"[COMPREHENSIVE] ❌ {error_msg}")
+        print(f"[ENHANCED] ❌ {error_msg}")
         
         return {
             "status": "error",
@@ -922,70 +1021,6 @@ if __name__ == '__main__':
     
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
-
-"""
-COMPREHENSIVE ENHANCEMENT SUMMARY:
-================================
-
-🎯 PROBLEM SOLVED:
-Your microservice now supports ALL document types from your JSON schema,
-not just Certificate of Fitness!
-
-✅ NEW DOCUMENT TYPE MODELS ADDED:
-1. AudiometricTestResults - for hearing tests
-2. SpirometryReport - for lung function tests  
-3. VisionTest - for eye examinations
-4. ConsentForm - for drug testing consent forms
-5. MedicalQuestionnaire - for medical history forms
-6. WorkingAtHeightsQuestionnaire - for height work assessments
-7. ContinuationForm - for follow-up medical notes
-
-✅ ENHANCED AUTO-DETECTION:
-- Comprehensive pattern matching for all document types
-- Smart scoring system to identify document type from content
-- Automatic model selection based on detected type
-
-✅ ROBUST FALLBACK SYSTEM:
-- If new model fails → Falls back to original Certificate of Fitness
-- If detection fails → Defaults to Certificate of Fitness
-- Original functionality preserved and guaranteed to work
-
-✅ COMPREHENSIVE WORKFLOW:
-1. Upload any medical document type
-2. Auto-detection identifies document type
-3. Appropriate model extracts structured data
-4. All data follows your JSON schema format
-5. Results stored in database-ready format
-
-✅ BACKWARDS COMPATIBILITY:
-- All original endpoints still work
-- Original Certificate of Fitness processing unchanged
-- Legacy systems continue to function
-
-USAGE EXAMPLES:
-==============
-
-# Auto-detect document type
-POST /process-comprehensive-document
-- Automatically detects and processes any document type
-
-# Specify document type  
-POST /process-comprehensive-document
-Form data: document_type=audiometric_test_results
-
-# Batch processing
-POST /process-documents
-- Upload multiple files of different types
-- Each gets processed with appropriate model
-
-# Retrieve results
-GET /get-document-data/{batch_id}
-- Get all extracted data in your JSON schema format
-
-This comprehensive solution ensures your entire patient record 
-gets digitized properly, not just the Certificate of Fitness!
-"""
-
 
 """
 COMPREHENSIVE ENHANCEMENT SUMMARY:
