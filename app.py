@@ -2,16 +2,7 @@
 Enhanced Medical Document Processing Microservice - Complete Multi-Document Support
 ===================================================================================
 
-This enhanced version adds support for ALL document types in your JSON schema:
-- Certificate of Fitness
-- Audiometric Test Results  
-- Spirometry Reports
-- Vision Tests
-- Consent Forms
-- Medical Questionnaires
-- Working at Heights Questionnaires
-- Continuation Forms
-
+FIXED VERSION with proper .env loading and API key verification
 """
 
 import os
@@ -21,6 +12,31 @@ from contextlib import contextmanager
 from datetime import datetime, date
 from typing import List, Dict, Optional, Union, Any, Literal, Tuple
 from enum import Enum
+
+# Load environment variables from .env file FIRST
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    print("✅ .env file loaded successfully")
+except ImportError:
+    print("❌ python-dotenv not installed. Install with: pip install python-dotenv")
+except Exception as e:
+    print(f"❌ Error loading .env file: {e}")
+
+# Verify API keys are loaded (CORRECT VARIABLE NAMES)
+vision_agent_key = os.getenv('VISION_AGENT_API_KEY')  # This is the correct one for agentic-doc
+landing_ai_key = os.getenv('LANDINGAI_API_KEY')      # Alternative/backup variable name
+
+if vision_agent_key:
+    print(f"✅ VISION_AGENT_API_KEY loaded (length: {len(vision_agent_key)})")
+elif landing_ai_key:
+    print(f"✅ LANDINGAI_API_KEY loaded as fallback (length: {len(landing_ai_key)})")
+    # Set the correct variable name for agentic-doc
+    os.environ['VISION_AGENT_API_KEY'] = landing_ai_key
+    print("✅ Set VISION_AGENT_API_KEY from LANDINGAI_API_KEY")
+else:
+    print("❌ Neither VISION_AGENT_API_KEY nor LANDINGAI_API_KEY found in environment")
+    print("Please ensure your .env file contains: VISION_AGENT_API_KEY=your_api_key")
 
 # Memory optimization settings
 os.environ.setdefault('BATCH_SIZE', '1')        
@@ -880,7 +896,7 @@ if __name__ == '__main__':
     print("✅ Enhanced document type detection")
     print("✅ Comprehensive model routing with fallback")
     print("✅ All original functionality preserved")
-    print("✅ Batch processing with temporary storage")
+    print("✅ Batch processing to temporary storage")
     print("✅ Background cleanup system")
     print(f"✅ agentic-doc Available: {PARSE_FUNCTION_AVAILABLE}")
     print("")
@@ -906,6 +922,70 @@ if __name__ == '__main__':
     
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
+"""
+COMPREHENSIVE ENHANCEMENT SUMMARY:
+================================
+
+🎯 PROBLEM SOLVED:
+Your microservice now supports ALL document types from your JSON schema,
+not just Certificate of Fitness!
+
+✅ NEW DOCUMENT TYPE MODELS ADDED:
+1. AudiometricTestResults - for hearing tests
+2. SpirometryReport - for lung function tests  
+3. VisionTest - for eye examinations
+4. ConsentForm - for drug testing consent forms
+5. MedicalQuestionnaire - for medical history forms
+6. WorkingAtHeightsQuestionnaire - for height work assessments
+7. ContinuationForm - for follow-up medical notes
+
+✅ ENHANCED AUTO-DETECTION:
+- Comprehensive pattern matching for all document types
+- Smart scoring system to identify document type from content
+- Automatic model selection based on detected type
+
+✅ ROBUST FALLBACK SYSTEM:
+- If new model fails → Falls back to original Certificate of Fitness
+- If detection fails → Defaults to Certificate of Fitness
+- Original functionality preserved and guaranteed to work
+
+✅ COMPREHENSIVE WORKFLOW:
+1. Upload any medical document type
+2. Auto-detection identifies document type
+3. Appropriate model extracts structured data
+4. All data follows your JSON schema format
+5. Results stored in database-ready format
+
+✅ BACKWARDS COMPATIBILITY:
+- All original endpoints still work
+- Original Certificate of Fitness processing unchanged
+- Legacy systems continue to function
+
+USAGE EXAMPLES:
+==============
+
+# Auto-detect document type
+POST /process-comprehensive-document
+- Automatically detects and processes any document type
+
+# Specify document type  
+POST /process-comprehensive-document
+Form data: document_type=audiometric_test_results
+
+# Batch processing
+POST /process-documents
+- Upload multiple files of different types
+- Each gets processed with appropriate model
+
+# Retrieve results
+GET /get-document-data/{batch_id}
+- Get all extracted data in your JSON schema format
+
+This comprehensive solution ensures your entire patient record 
+gets digitized properly, not just the Certificate of Fitness!
+"""
+
 
 """
 COMPREHENSIVE ENHANCEMENT SUMMARY:
