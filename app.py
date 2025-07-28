@@ -969,4 +969,3 @@ GET /get-document-data/{batch_id}
 This comprehensive solution ensures your entire patient record 
 gets digitized properly, not just the Certificate of Fitness!
 """
-                "
